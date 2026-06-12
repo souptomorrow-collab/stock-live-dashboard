@@ -1,0 +1,271 @@
+# -*- coding: utf-8 -*-
+"""
+即時股票分析儀表板 (FastAPI)
+- 台股: 證交所 MIS 即時報價 API(盤中約 5 秒更新)
+- 美股/加密貨幣: Yahoo Finance 即時報價
+- 背景每 10 秒更新報價,用「歷史日線 + 即時價」重算指標與訊號
+用法: python live_dashboard.py  →  瀏覽器開 http://127.0.0.1:8000
+"""
+import io
+import sys
+import threading
+import time
+from datetime import datetime
+
+import pandas as pd
+import requests
+import yfinance as yf
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+# ===== 自選股(台股用 MIS 即時源;美股/幣用 Yahoo) =====
+TW_STOCKS = {  # code: (名稱, tse|otc)
+    "2330": ("台積電", "tse"),
+    "2317": ("鴻海", "tse"),
+    "2454": ("聯發科", "tse"),
+    "2308": ("台達電", "tse"),
+    "0050": ("元大台灣50", "tse"),
+}
+YF_TICKERS = {
+    "AAPL": "Apple", "NVDA": "NVIDIA", "MSFT": "Microsoft",
+    "GOOGL": "Alphabet", "TSLA": "Tesla",
+    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum",
+}
+
+POLL_SEC = 10
+app = FastAPI()
+STATE = {"quotes": {}, "updated": None}
+HISTORY: dict[str, pd.Series] = {}   # ticker -> 日線收盤序列(不含今日)
+VOLHIST: dict[str, float] = {}       # ticker -> 20日均量
+
+
+# ===== 啟動時抓歷史日線(算指標的基底) =====
+def load_history():
+    all_syms = [c + ".TW" if m == "tse" else c + ".TWO"
+                for c, (_, m) in TW_STOCKS.items()] + list(YF_TICKERS)
+    print("載入歷史日線...")
+    data = yf.download(all_syms, period="6mo", auto_adjust=True,
+                       group_by="ticker", threads=True, progress=False)
+    today = pd.Timestamp.now().normalize()
+    for s in all_syms:
+        try:
+            df = data[s].dropna(subset=["Close"])
+            df = df[df.index.tz_localize(None).normalize() < today]  # 去掉今日未完成bar
+            HISTORY[s] = df["Close"]
+            VOLHIST[s] = float(df["Volume"].tail(20).mean())
+        except Exception as e:
+            print(f"  [警告] {s} 歷史資料失敗: {e}")
+    print(f"  完成,共 {len(HISTORY)} 檔")
+
+
+# ===== 即時指標 + 評分(歷史收盤 + 現價) =====
+def live_score(hist: pd.Series, price: float, vol_ratio: float | None) -> dict:
+    close = pd.concat([hist, pd.Series([price])], ignore_index=True)
+    ma5 = close.rolling(5).mean().iloc[-1]
+    ma20 = close.rolling(20).mean().iloc[-1]
+    ma60 = close.rolling(60).mean().iloc[-1]
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = float((100 - 100 / (1 + gain / loss)).iloc[-1])
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    hist_line = macd - macd.ewm(span=9, adjust=False).mean()
+    std20 = close.rolling(20).std().iloc[-1]
+
+    score, reasons = 0, []
+    if ma5 > ma20 > ma60: score += 2; reasons.append("均線多頭")
+    elif ma5 < ma20 < ma60: score -= 2; reasons.append("均線空頭")
+    if price > ma20: score += 1; reasons.append("站上月線")
+    else: score -= 1; reasons.append("低於月線")
+    if rsi < 30: score += 2; reasons.append(f"RSI{rsi:.0f}超賣")
+    elif rsi > 70: score -= 2; reasons.append(f"RSI{rsi:.0f}超買")
+    if hist_line.iloc[-2] <= 0 < hist_line.iloc[-1]: score += 2; reasons.append("MACD金叉")
+    elif hist_line.iloc[-2] >= 0 > hist_line.iloc[-1]: score -= 2; reasons.append("MACD死叉")
+    elif hist_line.iloc[-1] > 0: score += 1; reasons.append("MACD偏多")
+    else: score -= 1; reasons.append("MACD偏空")
+    if price < ma20 - 2 * std20: score += 1; reasons.append("破布林下軌")
+    elif price > ma20 + 2 * std20: score -= 1; reasons.append("破布林上軌")
+    if vol_ratio and vol_ratio > 1.5:
+        prev = float(hist.iloc[-1])
+        if price > prev: score += 1; reasons.append(f"放量上漲{vol_ratio:.1f}x")
+        else: score -= 1; reasons.append(f"放量下跌{vol_ratio:.1f}x")
+
+    if score >= 4: sig, css = "強力買進", "strong-buy"
+    elif score >= 2: sig, css = "買進", "buy"
+    elif score <= -4: sig, css = "強力賣出", "strong-sell"
+    elif score <= -2: sig, css = "賣出", "sell"
+    else: sig, css = "觀望", "hold"
+    return {"rsi": round(rsi, 0), "score": score, "signal": sig,
+            "css": css, "reasons": " / ".join(reasons)}
+
+
+# ===== 台股 MIS 即時報價 =====
+MIS_SESSION = requests.Session()
+MIS_SESSION.headers["User-Agent"] = "Mozilla/5.0"
+
+def fetch_tw_quotes() -> dict:
+    ex_ch = "|".join(f"{m}_{c}.tw" for c, (_, m) in TW_STOCKS.items())
+    url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+    r = MIS_SESSION.get(url, params={"ex_ch": ex_ch, "json": "1", "delay": "0",
+                                     "_": str(int(time.time() * 1000))}, timeout=10)
+    out = {}
+    for m in r.json().get("msgArray", []):
+        code = m.get("c")
+        z = m.get("z", "-")
+        if z in ("-", "", None):  # 無成交時用最佳買賣價中點,再退而求其次用昨收
+            try:
+                b = float(m["b"].split("_")[0]); a = float(m["a"].split("_")[0])
+                z = (a + b) / 2
+            except Exception:
+                z = m.get("y", "-")
+        try:
+            price = float(z)
+            y = float(m["y"])
+            out[code] = {"price": price, "prev": y, "vol": float(m.get("v", 0)) * 1000,
+                         "high": m.get("h"), "low": m.get("l"),
+                         "time": m.get("t", "")}
+        except Exception:
+            continue
+    return out
+
+
+# ===== Yahoo 即時報價 =====
+def fetch_yf_quotes() -> dict:
+    out = {}
+    for t in YF_TICKERS:
+        try:
+            fi = yf.Ticker(t).fast_info
+            price = fi["last_price"]
+            prev = fi["previous_close"]
+            out[t] = {"price": float(price), "prev": float(prev),
+                      "vol": float(fi.get("last_volume") or 0),
+                      "high": fi.get("day_high"), "low": fi.get("day_low"),
+                      "time": datetime.now().strftime("%H:%M:%S")}
+        except Exception:
+            continue
+    return out
+
+
+# ===== 背景更新迴圈 =====
+def updater():
+    tick = 0
+    yf_cache = {}
+    while True:
+        quotes = {}
+        try:
+            tw = fetch_tw_quotes()
+        except Exception as e:
+            print(f"[MIS錯誤] {e}"); tw = {}
+        if tick % 2 == 0:  # Yahoo 每 20 秒抓一次就好
+            try:
+                yf_cache = fetch_yf_quotes()
+            except Exception as e:
+                print(f"[Yahoo錯誤] {e}")
+
+        for code, (name, m) in TW_STOCKS.items():
+            q = tw.get(code)
+            sym = code + (".TW" if m == "tse" else ".TWO")
+            if not q or sym not in HISTORY:
+                continue
+            vr = q["vol"] / VOLHIST[sym] if VOLHIST.get(sym) else None
+            r = live_score(HISTORY[sym], q["price"], vr)
+            quotes[code] = {"name": name, "group": "台股", **q,
+                            "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r}
+        for t, name in YF_TICKERS.items():
+            q = yf_cache.get(t)
+            if not q or t not in HISTORY:
+                continue
+            grp = "加密貨幣" if t.endswith("-USD") else "美股"
+            r = live_score(HISTORY[t], q["price"], None)
+            quotes[t] = {"name": name, "group": grp, **q,
+                         "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r}
+
+        if quotes:
+            STATE["quotes"] = quotes
+            STATE["updated"] = datetime.now().strftime("%H:%M:%S")
+        tick += 1
+        time.sleep(POLL_SEC)
+
+
+@app.get("/api/quotes")
+def api_quotes():
+    return JSONResponse(STATE)
+
+
+PAGE = """<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>即時股票分析</title>
+<style>
+:root{color-scheme:dark}
+body{font-family:'Microsoft JhengHei',system-ui,sans-serif;background:#12141a;color:#e8eaf0;margin:0;padding:24px}
+h1{margin:0 0 4px} .sub{color:#8a90a0;margin-bottom:18px}
+.live{display:inline-block;width:9px;height:9px;border-radius:50%;background:#3ddc84;margin-right:6px;animation:pulse 1.6s infinite}
+@keyframes pulse{50%{opacity:.3}}
+h2{border-left:4px solid #4f9cff;padding-left:10px;margin:26px 0 10px;font-size:17px}
+table{width:100%;border-collapse:collapse;background:#1b1e27;border-radius:12px;overflow:hidden}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid #262a36;font-size:14px;white-space:nowrap}
+th{background:#222633;color:#9aa2b8}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.up{color:#ff5d6c} .down{color:#3ddc84}
+.badge{padding:2px 9px;border-radius:99px;font-size:12px;font-weight:700}
+.strong-buy{background:#7a1f2b;color:#ffb3bc} .buy{background:#5c2a33;color:#ff9aa6}
+.hold{background:#3a3f4d;color:#cfd5e4}
+.sell{background:#1f4d35;color:#9be8c0} .strong-sell{background:#155c38;color:#7df0b4}
+.rsn{color:#8a90a0;font-size:12px}
+td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
+@keyframes fu{0%{background:#5c2a33}100%{background:transparent}}
+@keyframes fd{0%{background:#1f4d35}100%{background:transparent}}
+.note{color:#666c7e;font-size:12px;margin-top:20px}
+</style></head><body>
+<h1>📡 即時股票分析</h1>
+<div class="sub"><span class="live"></span>每 10 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
+<div id="root">載入中...</div>
+<div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。訊號由技術指標即時計算,僅供參考。</div>
+<script>
+const prev={};
+async function refresh(){
+  try{
+    const r=await fetch('/api/quotes'); const s=await r.json();
+    document.getElementById('ts').textContent=s.updated||'-';
+    const groups={};
+    for(const [k,q] of Object.entries(s.quotes)) (groups[q.group]=groups[q.group]||[]).push([k,q]);
+    let html='';
+    for(const g of ['台股','美股','加密貨幣']){
+      if(!groups[g]) continue;
+      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th>理由</th><th>報價時間</th></tr>`;
+      for(const [k,q] of groups[g]){
+        const cls=q.chg>=0?'up':'down';
+        const dir=prev[k]===undefined?'':(q.price>prev[k]?'flash-up':(q.price<prev[k]?'flash-dn':''));
+        prev[k]=q.price;
+        html+=`<tr><td>${q.name}</td><td style="color:#8a90a0">${k}</td>
+        <td class="num ${dir}"><b>${q.price.toLocaleString(undefined,{maximumFractionDigits:2})}</b></td>
+        <td class="num ${cls}">${q.chg>=0?'▲':'▼'} ${q.chg.toFixed(2)}%</td>
+        <td class=num>${q.high??'-'}</td><td class=num>${q.low??'-'}</td>
+        <td class=num>${q.rsi}</td><td><span class="badge ${q.css}">${q.signal}</span></td>
+        <td class=num>${q.score>0?'+':''}${q.score}</td><td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td></tr>`;
+      }
+      html+='</table>';
+    }
+    document.getElementById('root').innerHTML=html;
+  }catch(e){console.error(e);}
+}
+refresh(); setInterval(refresh,10000);
+</script></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return PAGE
+
+
+if __name__ == "__main__":
+    import uvicorn
+    load_history()
+    threading.Thread(target=updater, daemon=True).start()
+    print("即時儀表板: http://127.0.0.1:8000")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
