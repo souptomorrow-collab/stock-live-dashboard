@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>股票分析儀表板</title>
+<style>
+:root{color-scheme:dark}
+body{font-family:'Microsoft JhengHei',system-ui,sans-serif;background:#12141a;color:#e8eaf0;margin:0;padding:20px;max-width:1280px;margin:auto}
+h1{margin:6px 0 4px;font-size:24px} .sub{color:#8a90a0;margin-bottom:14px;font-size:13.5px}
+.stale{color:#ffb84f}
+.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.tab{background:#1b1e27;border:1px solid #2a2e3a;color:#e8eaf0;border-radius:10px;padding:8px 18px;font-size:14px;cursor:pointer;text-decoration:none}
+.tab.on{background:#2a3550;border-color:#4f9cff}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chip{background:#1b1e27;border:1px solid #2a2e3a;border-radius:99px;padding:4px 12px;font-size:13px;color:#aab}
+.controls{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+input,select{background:#1b1e27;border:1px solid #2a2e3a;color:#e8eaf0;border-radius:8px;padding:8px 12px;font-size:14px}
+input{width:220px}
+table{width:100%;border-collapse:collapse;background:#1b1e27;border-radius:12px;overflow:hidden}
+th,td{padding:6px 10px;text-align:left;border-bottom:1px solid #262a36;font-size:13px;white-space:nowrap}
+th{background:#222633;color:#9aa2b8}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.up{color:#ff5d6c} .down{color:#3ddc84}
+.badge{padding:2px 8px;border-radius:99px;font-size:11.5px;font-weight:700}
+.strong-buy{background:#7a1f2b;color:#ffb3bc} .buy{background:#5c2a33;color:#ff9aa6}
+.hold{background:#3a3f4d;color:#cfd5e4}
+.sell{background:#1f4d35;color:#9be8c0} .strong-sell{background:#155c38;color:#7df0b4}
+.rsn{color:#8a90a0;font-size:12px}
+.note{color:#666c7e;font-size:12px;margin-top:16px;line-height:1.7}
+h2{border-left:4px solid #4f9cff;padding-left:10px;margin:20px 0 10px;font-size:16px}
+@media(max-width:640px){.rsn{display:none}}
+</style></head><body>
+<h1>📊 股票分析儀表板</h1>
+<div class="sub">台股(證交所即時源)・美股・加密貨幣 × 技術指標自動評分 | 數據更新:<span id="ts">載入中...</span> <span id="stale"></span></div>
+<div class="tabs">
+  <span class="tab on" id="tabW" onclick="show('w')">📡 自選股</span>
+  <span class="tab" id="tabM" onclick="show('m')">🔍 全市場</span>
+</div>
+
+<div id="secW">
+  <div id="watchRoot">載入中...</div>
+</div>
+
+<div id="secM" style="display:none">
+  <div class="chips" id="chips"></div>
+  <div class="controls">
+    <input id="q" placeholder="搜尋代碼 / 名稱 / 產業...">
+    <select id="sig"><option value="">全部訊號</option><option>強力買進</option><option>買進</option><option>觀望</option><option>賣出</option><option>強力賣出</option></select>
+    <select id="mkt"><option value="">上市+上櫃</option><option>上市</option><option>上櫃</option></select>
+    <select id="srt">
+      <option value="score_d">評分高→低</option><option value="score_a">評分低→高</option>
+      <option value="chg_d">漲幅大→小</option><option value="chg_a">跌幅大→小</option>
+      <option value="rsi_a">RSI 低→高</option><option value="rsi_d">RSI 高→低</option>
+    </select>
+    <span id="cnt" style="color:#8a90a0;font-size:13px"></span>
+  </div>
+  <table id="tbl"><thead><tr><th>代碼</th><th>名稱</th><th>市場</th><th>產業</th>
+  <th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th>理由</th>
+  </tr></thead><tbody></tbody></table>
+</div>
+
+<div class="note">⚠️ 訊號由技術指標自動產生(均線/RSI/MACD/布林/量能,-9~+9 分),僅供參考,不構成投資建議。<br>
+數據由本機分析程式定期發布(約 5 分鐘一次);若「數據更新」時間很舊,代表發布端目前離線,顯示的是最後快照。紅漲綠跌。</div>
+
+<script>
+const BASE='https://raw.githubusercontent.com/souptomorrow-collab/stock-live-dashboard/data/';
+let MARKET={},WATCH={};
+function show(t){
+  document.getElementById('secW').style.display=t==='w'?'':'none';
+  document.getElementById('secM').style.display=t==='m'?'':'none';
+  document.getElementById('tabW').className='tab'+(t==='w'?' on':'');
+  document.getElementById('tabM').className='tab'+(t==='m'?' on':'');
+}
+function renderWatch(){
+  const groups={};
+  for(const [k,q] of Object.entries(WATCH.quotes||{})) (groups[q.group]=groups[q.group]||[]).push([k,q]);
+  let html='';
+  for(const g of ['台股','美股','加密貨幣']){
+    if(!groups[g]) continue;
+    html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th class=rsn>理由</th></tr>`;
+    for(const [k,q] of groups[g]){
+      html+=`<tr><td>${q.name}</td><td style="color:#8a90a0">${k}</td>
+      <td class=num><b>${q.price.toLocaleString(undefined,{maximumFractionDigits:2})}</b></td>
+      <td class="num ${q.chg>=0?'up':'down'}">${q.chg>=0?'▲':'▼'} ${q.chg.toFixed(2)}%</td>
+      <td class=num>${q.rsi}</td><td><span class="badge ${q.css}">${q.signal}</span></td>
+      <td class=num>${q.score>0?'+':''}${q.score}</td><td class=rsn>${q.reasons}</td></tr>`;
+    }
+    html+='</table>';
+  }
+  document.getElementById('watchRoot').innerHTML=html||'尚無資料';
+}
+function renderMarket(){
+  const q=document.getElementById('q').value.toLowerCase();
+  const sig=document.getElementById('sig').value, mkt=document.getElementById('mkt').value;
+  const [sk,sd]=document.getElementById('srt').value.split('_');
+  let rows=Object.entries(MARKET.quotes||{}).map(([k,v])=>({code:k,...v}));
+  const counts={};
+  for(const r of rows) counts[r.signal]=(counts[r.signal]||0)+1;
+  document.getElementById('chips').innerHTML=['強力買進','買進','觀望','賣出','強力賣出']
+    .map(s=>`<span class=chip>${s} <b>${counts[s]||0}</b></span>`).join('');
+  if(q) rows=rows.filter(r=>(r.code+r.name+(r.industry||'')).toLowerCase().includes(q));
+  if(sig) rows=rows.filter(r=>r.signal===sig);
+  if(mkt) rows=rows.filter(r=>r.market===mkt);
+  const key={score:'score',chg:'chg',rsi:'rsi'}[sk];
+  rows.sort((a,b)=>(sd==='d'?b[key]-a[key]:a[key]-b[key]));
+  document.getElementById('cnt').textContent=`符合 ${rows.length} 檔`;
+  document.querySelector('#tbl tbody').innerHTML=rows.slice(0,300).map(r=>`<tr>
+  <td>${r.code}</td><td>${r.name}</td><td>${r.market}</td><td>${r.industry||''}</td>
+  <td class=num><b>${r.price.toLocaleString(undefined,{maximumFractionDigits:2})}</b></td>
+  <td class="num ${r.chg>=0?'up':'down'}">${r.chg>=0?'▲':'▼'} ${r.chg.toFixed(2)}%</td>
+  <td class=num>${r.rsi}</td><td><span class="badge ${r.css}">${r.signal}</span></td>
+  <td class=num>${r.score>0?'+':''}${r.score}</td><td class=rsn>${r.reasons}</td></tr>`).join('');
+}
+async function load(){
+  try{
+    const bust='?t='+Math.floor(Date.now()/60000);
+    const [w,m]=await Promise.all([
+      fetch(BASE+'watch.json'+bust).then(r=>r.json()).catch(()=>({})),
+      fetch(BASE+'market.json'+bust).then(r=>r.json()).catch(()=>({}))
+    ]);
+    WATCH=w; MARKET=m;
+    const pub=m.published_at||w.published_at;
+    document.getElementById('ts').textContent=pub||'-';
+    if(pub){
+      const age=(Date.now()-new Date(pub.replace(' ','T')+'+08:00').getTime())/60000;
+      document.getElementById('stale').innerHTML=age>15?`<span class="stale">(發布端離線,快照已 ${Math.round(age)} 分鐘)</span>`:'';
+    }
+    renderWatch(); renderMarket();
+  }catch(e){console.error(e);}
+}
+for(const id of ['q','sig','mkt','srt']) document.getElementById(id).addEventListener('input',renderMarket);
+load(); setInterval(load,60000);
+</script></body></html>
