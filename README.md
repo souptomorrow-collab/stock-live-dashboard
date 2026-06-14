@@ -28,17 +28,38 @@
 ## 安裝與執行
 
 ```bash
-pip install fastapi uvicorn yfinance pandas requests
+pip install fastapi uvicorn yfinance pandas requests lxml
 python app.py            # 整合網站(啟動時載入歷史資料約 1-2 分鐘)
 python scan_all_stocks.py  # 產生全市場掃描報告 report_all.html
 python stock_analyzer.py   # 產生自選股深度報告 report.html
 ```
+
+> `lxml` 為必裝:全市場清單以 `pandas.read_html` 解析證交所網頁,缺它 app.py 啟動即報 `ImportError: lxml`。
 
 對外公開(臨時網址,免帳號):
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:8000
 ```
+
+## 永久公開即時頁(GitHub Pages,免費)
+
+公開站台:<https://souptomorrow-collab.github.io/stock-live-dashboard/>
+網頁從 GitHub `data` 分支讀 JSON;本機負責定期把分析結果推上去。
+
+```bash
+python supervisor.py        # 一鍵:啟動 app.py + publish_worker,任一崩潰自動重啟
+```
+
+開機/登入自動啟動(免系統管理員,放捷徑到 Windows 啟動資料夾):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install_autostart.ps1
+# 移除:刪除 啟動資料夾\StockDashboard.lnk
+```
+
+> 即時性取決於本機有沒有在跑 `supervisor.py`(MIS 即時源需台灣本地 IP,故發布端跑在本機)。
+> 電腦關機時公開頁顯示最後快照;`supervisor.py` 運行時每 5 分鐘更新一次。日誌見 `logs/`。
 
 ## 資料來源與限制
 

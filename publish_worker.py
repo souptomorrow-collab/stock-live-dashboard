@@ -15,7 +15,7 @@ from datetime import datetime
 
 import requests
 
-sys.stdout.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)  # 被導向到 log 檔時仍即時逐行寫入
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 CLONE_DIR = os.path.join(REPO_DIR, ".dataclone")

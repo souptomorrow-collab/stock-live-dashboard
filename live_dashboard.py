@@ -30,7 +30,7 @@ TW_STOCKS = {  # code: (名稱, tse|otc)
 }
 YF_TICKERS = {
     "AAPL": "Apple", "NVDA": "NVIDIA", "MSFT": "Microsoft",
-    "GOOGL": "Alphabet", "TSLA": "Tesla",
+    "GOOGL": "Alphabet", "TSLA": "Tesla", "SPCX": "SpaceX",
     "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum",
 }
 
@@ -62,6 +62,9 @@ def load_history():
 
 # ===== 即時指標 + 評分(歷史收盤 + 現價) =====
 def live_score(hist: pd.Series, price: float, vol_ratio: float | None) -> dict:
+    if len(hist) < 60:  # 歷史不足(如剛上市新股),技術指標不可靠,不給誤導性訊號
+        return {"rsi": "-", "score": 0, "signal": "資料不足", "css": "hold",
+                "reasons": f"上市未滿,僅 {len(hist)} 日歷史,技術指標待累積"}
     close = pd.concat([hist, pd.Series([price])], ignore_index=True)
     ma5 = close.rolling(5).mean().iloc[-1]
     ma20 = close.rolling(20).mean().iloc[-1]
@@ -140,7 +143,11 @@ def fetch_yf_quotes() -> dict:
         try:
             fi = yf.Ticker(t).fast_info
             price = fi["last_price"]
+            if price is None:
+                continue
             prev = fi["previous_close"]
+            if prev is None:  # 剛上市新股 fast_info 可能無昨收,改用歷史最後收盤補
+                prev = float(HISTORY[t].iloc[-1]) if t in HISTORY and len(HISTORY[t]) else price
             out[t] = {"price": float(price), "prev": float(prev),
                       "vol": float(fi.get("last_volume") or 0),
                       "high": fi.get("day_high"), "low": fi.get("day_low"),
