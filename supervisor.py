@@ -24,7 +24,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(ROOT, "logs")
 PY = sys.executable  # 用啟動本程式的同一個 Python
 API = "http://127.0.0.1:8000"
-HEALTH_TIMEOUT = 240   # app.py 載入全市場歷史約 1-2 分鐘,給足 4 分鐘
+HEALTH_TIMEOUT = 480   # app.py 載入台股+美股+加密貨幣歷史約 3-5 分鐘,給足 8 分鐘
 RESTART_DELAY = 10     # 子程序崩潰後重啟前等待秒數
 
 os.makedirs(LOG_DIR, exist_ok=True)

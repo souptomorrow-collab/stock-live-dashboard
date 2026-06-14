@@ -55,7 +55,7 @@ a.card:hover{{border-color:#4f9cff;transform:translateY(-2px)}}
 <a class="card" href="/watchlist"><div class="t">📡 自選股即時</div>
 <div class="d">台積電、聯發科、NVIDIA、BTC 等 12 檔。台股走證交所即時源,每 10 秒更新訊號。</div></a>
 <a class="card" href="/market"><div class="t">🔍 全市場即時</div>
-<div class="d">上市+上櫃約 1400 檔輪掃(每輪 1-2 分鐘),可搜尋、篩選訊號、排序。</div></a>
+<div class="d">台股全市場 ~1900 檔 + 美股 S&P 500 + 加密貨幣前 100,即時輪掃,可搜尋、篩選市場/訊號、排序。</div></a>
 <a class="card" href="/scan"><div class="t">📋 全市場掃描報告</div>
 <div class="d">每日收盤後的全市場技術面掃描快照,含評分理由。</div></a>
 <a class="card" href="/report"><div class="t">📈 自選股深度報告</div>
@@ -112,10 +112,11 @@ def boot():
     print("[1/3] 載入自選股歷史資料...")
     wl.load_history()
     threading.Thread(target=wl.updater, daemon=True).start()
-    print("[2/3] 取得全市場清單與歷史資料(約 1-2 分鐘)...")
-    tickers = mk.get_tickers()
+    print("[2/3] 取得全市場清單(台股+美股+加密貨幣)與歷史資料(約 3-5 分鐘)...")
+    tickers = mk.get_all_tickers()
     mk.load_history(tickers)
-    threading.Thread(target=mk.sweep_loop, daemon=True).start()
+    threading.Thread(target=mk.sweep_loop, daemon=True).start()       # 台股 MIS 輪掃
+    threading.Thread(target=mk.yf_sweep_loop, daemon=True).start()    # 美股+加密貨幣 Yahoo 輪掃
     print("[3/3] 啟動完成")
 
 
