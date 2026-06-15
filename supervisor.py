@@ -18,7 +18,16 @@ from datetime import datetime
 
 import requests
 
-sys.stdout.reconfigure(encoding="utf-8")
+# pythonw.exe(開機自動啟動用)沒有主控台,sys.stdout/stderr 會是 None;
+# 先補成可寫對象再 reconfigure,否則啟動瞬間就 AttributeError 崩潰。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = sys.stdout
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(ROOT, "logs")
