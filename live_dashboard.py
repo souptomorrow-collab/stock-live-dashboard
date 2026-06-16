@@ -37,6 +37,7 @@ YF_TICKERS = {
 }
 
 POLL_SEC = 5   # 台股輪詢間隔(秒)= MIS 源約 5 秒刷新一次,設更低無新資料且有封鎖風險
+YF_POLL_SEC = 5    # 美股/加密輪詢(秒):全市場掃描已放慢讓出 Yahoo 額度,自選股 8 檔可跑 5 秒
 app = FastAPI()
 STATE = {"quotes": {}, "updated": None}
 HISTORY: dict[str, pd.Series] = {}   # ticker -> 日線收盤序列(不含今日)
@@ -244,42 +245,28 @@ def fetch_tw_quotes() -> dict:
     return out
 
 
-# ===== Yahoo 即時報價(批次:一次請求抓全部,可高頻查不易被限流) =====
+# ===== Yahoo 即時報價(官方 chart 端點:現價/昨收/最高/最低一次到位,漲跌幅正確) =====
+YF_SESSION = requests.Session()
+YF_SESSION.headers["User-Agent"] = "Mozilla/5.0"
+
+
 def fetch_yf_quotes() -> dict:
-    syms = list(YF_TICKERS)
-    if not syms:
-        return {}
-    try:
-        data = yf.download(syms, period="1d", interval="1m",
-                           group_by="ticker", threads=True, progress=False)
-    except Exception:
-        data = None
-    multi = isinstance(getattr(data, "columns", None), pd.MultiIndex)
-    now = datetime.now().strftime("%H:%M:%S")
     out = {}
-    for t in syms:
-        live = hi = lo = vol = None
+    for t in list(YF_TICKERS):
         try:
-            if data is not None and not data.empty:
-                df = (data[t] if multi else data).dropna(subset=["Close"])
-                if not df.empty:
-                    live = float(df["Close"].iloc[-1])
-                    hi = float(df["High"].max())
-                    lo = float(df["Low"].min())
-                    vol = float(df["Volume"].iloc[-1])
+            r = YF_SESSION.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{t}", timeout=8)
+            m = r.json()["chart"]["result"][0]["meta"]
+            price = m.get("regularMarketPrice")
+            prev = m.get("previousClose") or m.get("chartPreviousClose")
+            if price is None or not prev:
+                continue
+            out[t] = {"price": float(price), "prev": float(prev),
+                      "vol": float(m.get("regularMarketVolume") or 0),
+                      "high": m.get("regularMarketDayHigh"),
+                      "low": m.get("regularMarketDayLow"),
+                      "time": datetime.now().strftime("%H:%M:%S")}
         except Exception:
-            pass
-        hist = HISTORY.get(t)
-        if live is not None:                        # 盤中即時價
-            price = live
-            prev = float(hist.iloc[-1]) if hist is not None and len(hist) else price
-        elif hist is not None and len(hist) >= 1:   # 休市:退回最後收盤(不消失)
-            price = float(hist.iloc[-1])
-            prev = float(hist.iloc[-2]) if len(hist) >= 2 else price
-        else:
             continue
-        out[t] = {"price": price, "prev": prev, "vol": vol or 0.0,
-                  "high": hi, "low": lo, "time": now}
     return out
 
 
@@ -287,14 +274,14 @@ def fetch_yf_quotes() -> dict:
 YF_CACHE: dict = {}   # 美股/加密最新報價,由 yf_updater 執行緒每 5 秒刷新
 
 
-def yf_updater():     # 獨立執行緒:美股+加密每 5 秒批次刷新(不拖慢台股迴圈)
+def yf_updater():     # 獨立執行緒:美股+加密每 20 秒刷新(Yahoo 限流,不能更快)
     global YF_CACHE
     while True:
         try:
             YF_CACHE = fetch_yf_quotes()
         except Exception as e:
             print(f"[Yahoo錯誤] {e}")
-        time.sleep(POLL_SEC)
+        time.sleep(YF_POLL_SEC)
 
 
 def updater():        # 台股主迴圈:每 5 秒

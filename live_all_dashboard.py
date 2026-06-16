@@ -337,7 +337,7 @@ def yf_sweep_loop():
             time.sleep(YF_DELAY)
         STATE["n_total"] = len(STATE["quotes"])
         print(f"[美股+幣輪掃完成] {len(codes)} 檔,{round(time.time() - t0)} 秒", flush=True)
-        time.sleep(3)
+        time.sleep(300)   # 全市場美股/加密每 5 分鐘掃一次就好,讓出 Yahoo 額度給自選股 5 秒
 
 
 @app.get("/api/quotes")
