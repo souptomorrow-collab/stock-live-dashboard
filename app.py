@@ -121,7 +121,8 @@ def deep_report():
 def boot():
     print("[1/3] 載入自選股歷史資料...")
     wl.load_history()
-    threading.Thread(target=wl.updater, daemon=True).start()
+    threading.Thread(target=wl.updater, daemon=True).start()       # 台股 5 秒
+    threading.Thread(target=wl.yf_updater, daemon=True).start()    # 美股+加密 5 秒
     print("[2/3] 取得全市場清單(台股+美股+加密貨幣)與歷史資料(約 3-5 分鐘)...")
     tickers = mk.get_all_tickers()
     mk.load_history(tickers)

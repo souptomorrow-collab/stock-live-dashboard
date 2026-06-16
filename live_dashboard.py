@@ -244,43 +244,66 @@ def fetch_tw_quotes() -> dict:
     return out
 
 
-# ===== Yahoo 即時報價 =====
+# ===== Yahoo 即時報價(批次:一次請求抓全部,可高頻查不易被限流) =====
 def fetch_yf_quotes() -> dict:
+    syms = list(YF_TICKERS)
+    if not syms:
+        return {}
+    try:
+        data = yf.download(syms, period="1d", interval="1m",
+                           group_by="ticker", threads=True, progress=False)
+    except Exception:
+        data = None
+    multi = isinstance(getattr(data, "columns", None), pd.MultiIndex)
+    now = datetime.now().strftime("%H:%M:%S")
     out = {}
-    for t in list(YF_TICKERS):
+    for t in syms:
+        live = hi = lo = vol = None
         try:
-            fi = yf.Ticker(t).fast_info
-            price = fi["last_price"]
-            if price is None:
-                continue
-            prev = fi["previous_close"]
-            if prev is None:  # 剛上市新股 fast_info 可能無昨收,改用歷史最後收盤補
-                prev = float(HISTORY[t].iloc[-1]) if t in HISTORY and len(HISTORY[t]) else price
-            out[t] = {"price": float(price), "prev": float(prev),
-                      "vol": float(fi.get("last_volume") or 0),
-                      "high": fi.get("day_high"), "low": fi.get("day_low"),
-                      "time": datetime.now().strftime("%H:%M:%S")}
+            if data is not None and not data.empty:
+                df = (data[t] if multi else data).dropna(subset=["Close"])
+                if not df.empty:
+                    live = float(df["Close"].iloc[-1])
+                    hi = float(df["High"].max())
+                    lo = float(df["Low"].min())
+                    vol = float(df["Volume"].iloc[-1])
         except Exception:
+            pass
+        hist = HISTORY.get(t)
+        if live is not None:                        # 盤中即時價
+            price = live
+            prev = float(hist.iloc[-1]) if hist is not None and len(hist) else price
+        elif hist is not None and len(hist) >= 1:   # 休市:退回最後收盤(不消失)
+            price = float(hist.iloc[-1])
+            prev = float(hist.iloc[-2]) if len(hist) >= 2 else price
+        else:
             continue
+        out[t] = {"price": price, "prev": prev, "vol": vol or 0.0,
+                  "high": hi, "low": lo, "time": now}
     return out
 
 
 # ===== 背景更新迴圈 =====
-def updater():
-    tick = 0
-    yf_cache = {}
+YF_CACHE: dict = {}   # 美股/加密最新報價,由 yf_updater 執行緒每 5 秒刷新
+
+
+def yf_updater():     # 獨立執行緒:美股+加密每 5 秒批次刷新(不拖慢台股迴圈)
+    global YF_CACHE
+    while True:
+        try:
+            YF_CACHE = fetch_yf_quotes()
+        except Exception as e:
+            print(f"[Yahoo錯誤] {e}")
+        time.sleep(POLL_SEC)
+
+
+def updater():        # 台股主迴圈:每 5 秒
     while True:
         quotes = {}
         try:
             tw = fetch_tw_quotes()
         except Exception as e:
             print(f"[MIS錯誤] {e}"); tw = {}
-        if tick % 4 == 0:  # Yahoo 每 20 秒抓一次就好(4 × 5s),避免限流
-            try:
-                yf_cache = fetch_yf_quotes()
-            except Exception as e:
-                print(f"[Yahoo錯誤] {e}")
-
         for code, (name, m) in list(TW_STOCKS.items()):
             q = tw.get(code)
             sym = code + (".TW" if m == "tse" else ".TWO")
@@ -291,7 +314,7 @@ def updater():
             quotes[code] = {"name": name, "group": "台股", **q,
                             "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r}
         for t, name in list(YF_TICKERS.items()):
-            q = yf_cache.get(t)
+            q = YF_CACHE.get(t)
             if not q or t not in HISTORY:
                 continue
             grp = "加密貨幣" if t.endswith("-USD") else "美股"
@@ -302,7 +325,6 @@ def updater():
         if quotes:
             STATE["quotes"] = quotes
             STATE["updated"] = datetime.now().strftime("%H:%M:%S")
-        tick += 1
         time.sleep(POLL_SEC)
 
 
@@ -353,7 +375,7 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 .del{color:#ff5d6c;cursor:pointer;font-weight:700;padding:0 8px}.del:hover{color:#ff8b96}
 </style></head><body>
 <h1>📡 即時股票分析</h1>
-<div class="sub"><span class="live"></span>台股每 5 秒、美股/加密每 20 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
+<div class="sub"><span class="live"></span>台股 / 美股 / 加密每 5 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
 <div class="addbar">
   <input id="newt" placeholder="輸入代碼新增,例:2454(台股)/ TSLA(美股)/ DOGE-USD(幣)" onkeydown="if(event.key==='Enter')addTicker()">
   <button onclick="addTicker()">＋ 新增自選股</button>
@@ -419,5 +441,6 @@ if __name__ == "__main__":
     import uvicorn
     load_history()
     threading.Thread(target=updater, daemon=True).start()
+    threading.Thread(target=yf_updater, daemon=True).start()
     print("即時儀表板: http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
