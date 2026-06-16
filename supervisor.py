@@ -11,6 +11,7 @@
 手動測試: python supervisor.py    (Ctrl+C 停止,會一併關閉子程序)
 """
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -35,6 +36,8 @@ PY = sys.executable  # 用啟動本程式的同一個 Python
 API = "http://127.0.0.1:8000"
 HEALTH_TIMEOUT = 480   # app.py 載入台股+美股+加密貨幣歷史約 3-5 分鐘,給足 8 分鐘
 RESTART_DELAY = 10     # 子程序崩潰後重啟前等待秒數
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+TUNNEL_ID = "stock-dash"   # devtunnel 持久通道:對外公開分享的固定網址
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -46,13 +49,25 @@ def log(msg):
         f.write(line + "\n")
 
 
-def spawn(script):
-    """啟動一個子程序,stdout/stderr 導向 logs/<script>.log"""
-    out = open(os.path.join(LOG_DIR, script.replace(".py", "") + ".log"),
+def find_devtunnel():
+    """找 devtunnel.exe(公開分享通道用),找不到回 None。"""
+    p = shutil.which("devtunnel")
+    if p:
+        return p
+    cand = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet",
+                        "Packages",
+                        "Microsoft.devtunnel_Microsoft.Winget.Source_8wekyb3d8bbwe",
+                        "devtunnel.exe")
+    return cand if os.path.exists(cand) else None
+
+
+def spawn(name, cmd):
+    """啟動子程序 cmd(list),輸出導向 logs/<name>.log,且不彈出主控台視窗。"""
+    out = open(os.path.join(LOG_DIR, name + ".log"),
                "a", encoding="utf-8", buffering=1)
     out.write(f"\n===== 啟動 {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
-    return subprocess.Popen([PY, os.path.join(ROOT, script)],
-                            cwd=ROOT, stdout=out, stderr=subprocess.STDOUT)
+    return subprocess.Popen(cmd, cwd=ROOT, stdout=out, stderr=subprocess.STDOUT,
+                            creationflags=NO_WINDOW)
 
 
 def wait_healthy():
@@ -71,32 +86,42 @@ def wait_healthy():
 
 def main():
     log("=== Supervisor 啟動 ===")
-    procs = {}  # script -> Popen
+    procs = {}   # name -> Popen
+    cmds = {     # name -> 重啟用指令
+        "app": [PY, os.path.join(ROOT, "app.py")],
+        "publish_worker": [PY, os.path.join(ROOT, "publish_worker.py")],
+    }
+    dt = find_devtunnel()
+    if dt:
+        cmds["devtunnel"] = [dt, "host", TUNNEL_ID]
 
-    # 先起 app.py,等它健康後再起 publish_worker(發布器需要 app 的 API)
-    procs["app.py"] = spawn("app.py")
-    log("已啟動 app.py,等待健康檢查(載入歷史中,約 1-2 分鐘)...")
+    # 先起 app.py,等它健康後再起其餘
+    procs["app"] = spawn("app", cmds["app"])
+    log("已啟動 app.py,等待健康檢查(載入歷史中,約 3-5 分鐘)...")
     if wait_healthy():
         log("app.py 健康 ✅")
     else:
-        log("app.py 在時限內未就緒 ⚠️(仍繼續監看,稍後會自動處理)")
-    procs["publish_worker.py"] = spawn("publish_worker.py")
-    log("已啟動 publish_worker.py,pipeline 運行中。")
+        log("app.py 在時限內未就緒 ⚠️(仍繼續監看)")
+    procs["publish_worker"] = spawn("publish_worker", cmds["publish_worker"])
+    log("已啟動 publish_worker。")
+    if "devtunnel" in cmds:
+        procs["devtunnel"] = spawn("devtunnel", cmds["devtunnel"])
+        log("已啟動 devtunnel host(公開分享通道)。")
+    else:
+        log("未找到 devtunnel,略過公開分享通道。")
 
     # 監看迴圈:任一程序退出就重啟
     while True:
         time.sleep(15)
-        for script, p in list(procs.items()):
+        for name, p in list(procs.items()):
             if p.poll() is None:
                 continue  # 還活著
-            log(f"⚠️ {script} 已退出(returncode={p.returncode}),{RESTART_DELAY}s 後重啟")
+            log(f"⚠️ {name} 已退出(rc={p.returncode}),{RESTART_DELAY}s 後重啟")
             time.sleep(RESTART_DELAY)
-            if script == "publish_worker.py":
-                # 重啟發布器前,確保 app 還健康
-                if procs["app.py"].poll() is not None:
-                    continue  # app 也掛了,下一輪會先處理 app
-            procs[script] = spawn(script)
-            log(f"已重啟 {script}")
+            if name == "publish_worker" and procs["app"].poll() is not None:
+                continue  # app 也掛了,下一輪會先處理 app
+            procs[name] = spawn(name, cmds[name])
+            log(f"已重啟 {name}")
 
 
 if __name__ == "__main__":
