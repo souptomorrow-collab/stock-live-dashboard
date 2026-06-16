@@ -353,7 +353,7 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 .del{color:#ff5d6c;cursor:pointer;font-weight:700;padding:0 8px}.del:hover{color:#ff8b96}
 </style></head><body>
 <h1>📡 即時股票分析</h1>
-<div class="sub"><span class="live"></span>每 10 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
+<div class="sub"><span class="live"></span>台股每 5 秒、美股/加密每 20 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
 <div class="addbar">
   <input id="newt" placeholder="輸入代碼新增,例:2454(台股)/ TSLA(美股)/ DOGE-USD(幣)" onkeydown="if(event.key==='Enter')addTicker()">
   <button onclick="addTicker()">＋ 新增自選股</button>
