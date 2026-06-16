@@ -428,7 +428,7 @@ async function delTicker(code){
   try{ await fetch('/api/quotes/remove?ticker='+encodeURIComponent(code),{method:'POST'}); refresh(); }
   catch(e){}
 }
-refresh(); setInterval(refresh,10000);
+refresh(); setInterval(refresh,5000);
 </script></body></html>"""
 
 
