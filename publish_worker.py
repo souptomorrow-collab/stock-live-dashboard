@@ -22,10 +22,13 @@ CLONE_DIR = os.path.join(REPO_DIR, ".dataclone")
 REMOTE = "https://github.com/souptomorrow-collab/stock-live-dashboard.git"
 API = "http://127.0.0.1:8000"
 INTERVAL = 300  # 5 分鐘
+# 在 pythonw(無主控台)下執行 git 時,避免每個 git.exe 彈出一個 cmd 黑窗
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 def git(*args, cwd=CLONE_DIR):
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                       creationflags=NO_WINDOW)
     if r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout.strip()
@@ -62,7 +65,7 @@ def publish():
         return
     git("add", "-A")
     has_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=CLONE_DIR,
-                              capture_output=True).returncode == 0
+                              capture_output=True, creationflags=NO_WINDOW).returncode == 0
     if has_head:
         git("commit", "--amend", "-m", f"data snapshot {now}", "--allow-empty")
     else:
