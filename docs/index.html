@@ -59,7 +59,7 @@ h2{border-left:4px solid #4f9cff;padding-left:10px;margin:20px 0 10px;font-size:
 </div>
 
 <div class="note">⚠️ 訊號由技術指標自動產生(均線/RSI/MACD/布林/量能,-9~+9 分),僅供參考,不構成投資建議。<br>
-數據由本機分析程式定期發布(約 5 分鐘一次);若「數據更新」時間很舊,代表發布端目前離線,顯示的是最後快照。紅漲綠跌。</div>
+數據由本機分析程式發布:自選股約每 20 秒(近即時)、全市場約每 5 分鐘;若「數據更新」時間很舊,代表發布端離線,顯示的是最後快照。紅漲綠跌。</div>
 
 <script>
 const BASE='https://raw.githubusercontent.com/souptomorrow-collab/stock-live-dashboard/data/';
@@ -110,23 +110,27 @@ function renderMarket(){
   <td class=num>${r.rsi}</td><td><span class="badge ${r.css}">${r.signal}</span></td>
   <td class=num>${r.score>0?'+':''}${r.score}</td><td class=rsn>${r.reasons}</td></tr>`).join('');
 }
-async function load(){
+async function loadWatch(){    // 自選股:近即時(每 15 秒,細顆粒 cache-bust)
   try{
-    const bust='?t='+Math.floor(Date.now()/60000);
-    const [w,m]=await Promise.all([
-      fetch(BASE+'watch.json'+bust).then(r=>r.json()).catch(()=>({})),
-      fetch(BASE+'market.json'+bust).then(r=>r.json()).catch(()=>({}))
-    ]);
-    WATCH=w; MARKET=m;
-    const pub=m.published_at||w.published_at;
+    const w=await fetch(BASE+'watch.json?t='+Math.floor(Date.now()/15000)).then(r=>r.json());
+    if(!w||!w.quotes) return;
+    WATCH=w; renderWatch();
+    const pub=w.published_at;
     document.getElementById('ts').textContent=pub||'-';
     if(pub){
       const age=(Date.now()-new Date(pub.replace(' ','T')+'+08:00').getTime())/60000;
-      document.getElementById('stale').innerHTML=age>15?`<span class="stale">(發布端離線,快照已 ${Math.round(age)} 分鐘)</span>`:'';
+      document.getElementById('stale').innerHTML=age>3?`<span class="stale">(發布端離線,快照已 ${Math.round(age)} 分鐘)</span>`:'';
     }
-    renderWatch(); renderMarket();
+  }catch(e){console.error(e);}
+}
+async function loadMarket(){   // 全市場:每 60 秒(資料源每 5 分鐘更新)
+  try{
+    const m=await fetch(BASE+'market.json?t='+Math.floor(Date.now()/60000)).then(r=>r.json());
+    if(!m||!m.quotes) return;
+    MARKET=m; renderMarket();
   }catch(e){console.error(e);}
 }
 for(const id of ['q','sig','mkt','srt']) document.getElementById(id).addEventListener('input',renderMarket);
-load(); setInterval(load,60000);
+loadWatch(); loadMarket();
+setInterval(loadWatch,15000); setInterval(loadMarket,60000);
 </script></body></html>

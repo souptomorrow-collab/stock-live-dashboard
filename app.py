@@ -87,6 +87,16 @@ def api_watch():
     return JSONResponse(wl.STATE)
 
 
+@app.post("/api/watch/add")
+def api_watch_add(ticker: str):
+    return JSONResponse(wl.add_ticker(ticker))
+
+
+@app.post("/api/watch/remove")
+def api_watch_remove(ticker: str):
+    return JSONResponse(wl.remove_ticker(ticker))
+
+
 @app.get("/api/market")
 def api_market():
     return JSONResponse(mk.STATE)

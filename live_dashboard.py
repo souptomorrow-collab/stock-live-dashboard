@@ -7,6 +7,8 @@
 用法: python live_dashboard.py  →  瀏覽器開 http://127.0.0.1:8000
 """
 import io
+import json
+import os
 import sys
 import threading
 import time
@@ -40,9 +42,112 @@ STATE = {"quotes": {}, "updated": None}
 HISTORY: dict[str, pd.Series] = {}   # ticker -> 日線收盤序列(不含今日)
 VOLHIST: dict[str, float] = {}       # ticker -> 20日均量
 
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")  # 使用者自選股(可動態增減,程式內為預設種子)
+_TW_NAMES = None
+
+
+# ===== 自選股清單持久化(存檔,讓使用者可自行增減) =====
+def save_watchlist():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(WATCHLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump({"tw": {k: [v[0], v[1]] for k, v in TW_STOCKS.items()},
+                   "yf": YF_TICKERS}, f, ensure_ascii=False, indent=2)
+
+
+def load_watchlist():
+    if not os.path.exists(WATCHLIST_FILE):
+        save_watchlist()       # 首次:把程式內預設清單寫成可編輯檔
+        return
+    try:
+        with open(WATCHLIST_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        TW_STOCKS.clear()
+        TW_STOCKS.update({k: (v[0], v[1]) for k, v in d.get("tw", {}).items()})
+        YF_TICKERS.clear()
+        YF_TICKERS.update(d.get("yf", {}))
+    except Exception as e:
+        print(f"[watchlist] 載入失敗,沿用預設: {e}")
+
+
+def _tw_name(code):
+    global _TW_NAMES
+    if _TW_NAMES is None:
+        _TW_NAMES = {}
+        p = os.path.join(DATA_DIR, "tickers.csv")
+        if os.path.exists(p):
+            try:
+                df = pd.read_csv(p, dtype={"code": str})
+                _TW_NAMES = dict(zip(df["code"], df["name"]))
+            except Exception:
+                pass
+    return _TW_NAMES.get(code)
+
+
+def _load_one_history(yf_sym):
+    """抓單一標的 6 個月歷史,回傳 (close_series, vol20) 或 None。"""
+    try:
+        df = yf.download(yf_sym, period="6mo", auto_adjust=True,
+                         progress=False, threads=False)
+        if df is None or df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):   # 單一代碼會回多層欄位,攤平
+            df.columns = df.columns.get_level_values(0)
+        df = df.dropna(subset=["Close"])
+        df = df[df.index.tz_localize(None).normalize() < pd.Timestamp.now().normalize()]
+        if len(df) < 1:
+            return None
+        return df["Close"], float(df["Volume"].tail(20).mean())
+    except Exception:
+        return None
+
+
+def add_ticker(raw):
+    raw = (raw or "").strip().upper()
+    if not raw:
+        return {"ok": False, "msg": "請輸入代碼"}
+    if raw.isdigit() and len(raw) == 4:        # 台股:4 碼數字
+        if raw in TW_STOCKS:
+            return {"ok": False, "msg": f"{raw} 已在自選股"}
+        for suffix, mis in ((".TW", "tse"), (".TWO", "otc")):
+            h = _load_one_history(raw + suffix)
+            if h:
+                name = _tw_name(raw) or raw
+                HISTORY[raw + suffix], VOLHIST[raw + suffix] = h
+                TW_STOCKS[raw] = (name, mis)
+                save_watchlist()
+                return {"ok": True, "msg": f"已新增台股 {raw} {name}"}
+        return {"ok": False, "msg": f"找不到台股 {raw}(上市/上櫃皆查無)"}
+    sym = raw                                  # 美股 / 加密貨幣
+    if sym in YF_TICKERS:
+        return {"ok": False, "msg": f"{sym} 已在自選股"}
+    h = _load_one_history(sym)
+    if not h:
+        return {"ok": False, "msg": f"找不到 {sym}(Yahoo 無資料)"}
+    HISTORY[sym], VOLHIST[sym] = h
+    YF_TICKERS[sym] = sym
+    save_watchlist()
+    return {"ok": True, "msg": f"已新增 {sym}"}
+
+
+def remove_ticker(raw):
+    raw = (raw or "").strip().upper()
+    if raw in TW_STOCKS:
+        m = TW_STOCKS.pop(raw)[1]
+        HISTORY.pop(raw + (".TW" if m == "tse" else ".TWO"), None)
+    elif raw in YF_TICKERS:
+        YF_TICKERS.pop(raw)
+        HISTORY.pop(raw, None)
+    else:
+        return {"ok": False, "msg": f"{raw} 不在自選股"}
+    STATE["quotes"].pop(raw, None)
+    save_watchlist()
+    return {"ok": True, "msg": f"已移除 {raw}"}
+
 
 # ===== 啟動時抓歷史日線(算指標的基底) =====
 def load_history():
+    load_watchlist()           # 先載入(含使用者新增的)自選股清單
     all_syms = [c + ".TW" if m == "tse" else c + ".TWO"
                 for c, (_, m) in TW_STOCKS.items()] + list(YF_TICKERS)
     print("載入歷史日線...")
@@ -111,7 +216,10 @@ MIS_SESSION = requests.Session()
 MIS_SESSION.headers["User-Agent"] = "Mozilla/5.0"
 
 def fetch_tw_quotes() -> dict:
-    ex_ch = "|".join(f"{m}_{c}.tw" for c, (_, m) in TW_STOCKS.items())
+    items = list(TW_STOCKS.items())
+    if not items:
+        return {}
+    ex_ch = "|".join(f"{m}_{c}.tw" for c, (_, m) in items)
     url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
     r = MIS_SESSION.get(url, params={"ex_ch": ex_ch, "json": "1", "delay": "0",
                                      "_": str(int(time.time() * 1000))}, timeout=10)
@@ -139,7 +247,7 @@ def fetch_tw_quotes() -> dict:
 # ===== Yahoo 即時報價 =====
 def fetch_yf_quotes() -> dict:
     out = {}
-    for t in YF_TICKERS:
+    for t in list(YF_TICKERS):
         try:
             fi = yf.Ticker(t).fast_info
             price = fi["last_price"]
@@ -173,7 +281,7 @@ def updater():
             except Exception as e:
                 print(f"[Yahoo錯誤] {e}")
 
-        for code, (name, m) in TW_STOCKS.items():
+        for code, (name, m) in list(TW_STOCKS.items()):
             q = tw.get(code)
             sym = code + (".TW" if m == "tse" else ".TWO")
             if not q or sym not in HISTORY:
@@ -182,7 +290,7 @@ def updater():
             r = live_score(HISTORY[sym], q["price"], vr)
             quotes[code] = {"name": name, "group": "台股", **q,
                             "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r}
-        for t, name in YF_TICKERS.items():
+        for t, name in list(YF_TICKERS.items()):
             q = yf_cache.get(t)
             if not q or t not in HISTORY:
                 continue
@@ -201,6 +309,16 @@ def updater():
 @app.get("/api/quotes")
 def api_quotes():
     return JSONResponse(STATE)
+
+
+@app.post("/api/quotes/add")
+def api_add(ticker: str):
+    return JSONResponse(add_ticker(ticker))
+
+
+@app.post("/api/quotes/remove")
+def api_remove(ticker: str):
+    return JSONResponse(remove_ticker(ticker))
 
 
 PAGE = """<!DOCTYPE html>
@@ -228,9 +346,19 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 @keyframes fu{0%{background:#5c2a33}100%{background:transparent}}
 @keyframes fd{0%{background:#1f4d35}100%{background:transparent}}
 .note{color:#666c7e;font-size:12px;margin-top:20px}
+.addbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 18px}
+.addbar input{background:#1b1e27;border:1px solid #2a2e3a;color:#e8eaf0;border-radius:8px;padding:8px 12px;font-size:14px;width:340px}
+.addbar button{background:#2a3550;border:1px solid #4f9cff;color:#e8eaf0;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+.addbar button:hover{background:#34406a}
+.del{color:#ff5d6c;cursor:pointer;font-weight:700;padding:0 8px}.del:hover{color:#ff8b96}
 </style></head><body>
 <h1>📡 即時股票分析</h1>
 <div class="sub"><span class="live"></span>每 10 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
+<div class="addbar">
+  <input id="newt" placeholder="輸入代碼新增,例:2454(台股)/ TSLA(美股)/ DOGE-USD(幣)" onkeydown="if(event.key==='Enter')addTicker()">
+  <button onclick="addTicker()">＋ 新增自選股</button>
+  <span id="addmsg" style="font-size:13px"></span>
+</div>
 <div id="root">載入中...</div>
 <div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。訊號由技術指標即時計算,僅供參考。</div>
 <script>
@@ -244,7 +372,7 @@ async function refresh(){
     let html='';
     for(const g of ['台股','美股','加密貨幣']){
       if(!groups[g]) continue;
-      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th>理由</th><th>報價時間</th></tr>`;
+      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th>理由</th><th>報價時間</th><th></th></tr>`;
       for(const [k,q] of groups[g]){
         const cls=q.chg>=0?'up':'down';
         const dir=prev[k]===undefined?'':(q.price>prev[k]?'flash-up':(q.price<prev[k]?'flash-dn':''));
@@ -254,12 +382,29 @@ async function refresh(){
         <td class="num ${cls}">${q.chg>=0?'▲':'▼'} ${q.chg.toFixed(2)}%</td>
         <td class=num>${q.high??'-'}</td><td class=num>${q.low??'-'}</td>
         <td class=num>${q.rsi}</td><td><span class="badge ${q.css}">${q.signal}</span></td>
-        <td class=num>${q.score>0?'+':''}${q.score}</td><td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td></tr>`;
+        <td class=num>${q.score>0?'+':''}${q.score}</td><td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td>
+        <td><span class="del" title="移除自選股" onclick="delTicker('${k}')">✕</span></td></tr>`;
       }
       html+='</table>';
     }
     document.getElementById('root').innerHTML=html;
   }catch(e){console.error(e);}
+}
+async function addTicker(){
+  const el=document.getElementById('newt'), v=el.value.trim(), msg=document.getElementById('addmsg');
+  if(!v) return;
+  msg.style.color='#8a90a0'; msg.textContent='新增中(載入歷史資料)...';
+  try{
+    const r=await fetch('/api/quotes/add?ticker='+encodeURIComponent(v),{method:'POST'});
+    const d=await r.json();
+    msg.style.color=d.ok?'#3ddc84':'#ff5d6c'; msg.textContent=d.msg;
+    if(d.ok){ el.value=''; setTimeout(refresh,800); }
+  }catch(e){ msg.style.color='#ff5d6c'; msg.textContent='新增失敗'; }
+}
+async function delTicker(code){
+  if(!confirm('從自選股移除 '+code+'?')) return;
+  try{ await fetch('/api/quotes/remove?ticker='+encodeURIComponent(code),{method:'POST'}); refresh(); }
+  catch(e){}
 }
 refresh(); setInterval(refresh,10000);
 </script></body></html>"""

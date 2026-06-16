@@ -21,7 +21,8 @@ REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 CLONE_DIR = os.path.join(REPO_DIR, ".dataclone")
 REMOTE = "https://github.com/souptomorrow-collab/stock-live-dashboard.git"
 API = "http://127.0.0.1:8000"
-INTERVAL = 300  # 5 分鐘
+WATCH_INTERVAL = 20   # 自選股發布間隔(秒)— 近即時
+MARKET_EVERY = 15     # 每 N 輪才發布一次全市場(15 × 20s = 5 分鐘)
 # 在 pythonw(無主控台)下執行 git 時,避免每個 git.exe 彈出一個 cmd 黑窗
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -46,10 +47,13 @@ def setup():
         git("rm", "-rf", "--quiet", ".")
 
 
-def publish():
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+def publish(include_market=True):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    targets = [("watch.json", "/api/watch")]
+    if include_market:
+        targets.append(("market.json", "/api/market"))
     ok = False
-    for name, path in [("watch.json", "/api/watch"), ("market.json", "/api/market")]:
+    for name, path in targets:
         try:
             data = requests.get(API + path, timeout=15).json()
             if not data.get("quotes"):
@@ -71,15 +75,17 @@ def publish():
     else:
         git("commit", "-m", f"data snapshot {now}")
     git("push", "-f", "-u", "origin", "data")
-    print(f"{now} ✅ 已發布")
+    print(f"{now} ✅ 已發布 ({'自選股+全市場' if include_market else '自選股'})", flush=True)
 
 
 if __name__ == "__main__":
     setup()
-    print(f"每 {INTERVAL // 60} 分鐘發布一次,Ctrl+C 停止")
+    print(f"自選股每 {WATCH_INTERVAL}s、全市場每 {WATCH_INTERVAL * MARKET_EVERY // 60} 分鐘發布,Ctrl+C 停止")
+    tick = 0
     while True:
         try:
-            publish()
+            publish(include_market=(tick % MARKET_EVERY == 0))
         except Exception as e:
             print(f"[錯誤] {e}")
-        time.sleep(INTERVAL)
+        tick += 1
+        time.sleep(WATCH_INTERVAL)
