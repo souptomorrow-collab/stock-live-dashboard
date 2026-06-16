@@ -86,19 +86,19 @@ def _tw_name(code):
 
 
 def _load_one_history(yf_sym):
-    """抓單一標的 6 個月歷史,回傳 (close_series, vol20) 或 None。"""
+    """用 Yahoo chart 端點抓單一標的 6 個月日線(較不易被限流),回傳 (close, vol20) 或 None。"""
     try:
-        df = yf.download(yf_sym, period="6mo", auto_adjust=True,
-                         progress=False, threads=False)
-        if df is None or df.empty:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):   # 單一代碼會回多層欄位,攤平
-            df.columns = df.columns.get_level_values(0)
-        df = df.dropna(subset=["Close"])
-        df = df[df.index.tz_localize(None).normalize() < pd.Timestamp.now().normalize()]
+        r = YF_SESSION.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}",
+                           params={"range": "6mo", "interval": "1d"}, timeout=10)
+        res = r.json()["chart"]["result"][0]
+        q = res["indicators"]["quote"][0]
+        df = pd.DataFrame({"Close": q["close"], "Volume": q["volume"]},
+                          index=pd.to_datetime(res["timestamp"], unit="s")).dropna(subset=["Close"])
+        df = df[df.index.normalize() < pd.Timestamp.now().normalize()]   # 去掉今日未完成 bar
         if len(df) < 1:
             return None
-        return df["Close"], float(df["Volume"].tail(20).mean())
+        vol20 = df["Volume"].tail(20).mean()
+        return df["Close"], (float(vol20) if pd.notna(vol20) else 0.0)
     except Exception:
         return None
 
@@ -146,23 +146,19 @@ def remove_ticker(raw):
     return {"ok": True, "msg": f"已移除 {raw}"}
 
 
-# ===== 啟動時抓歷史日線(算指標的基底) =====
+# ===== 啟動時抓歷史日線(逐檔走 chart 端點,較不易被限流、不會整批漏抓) =====
 def load_history():
     load_watchlist()           # 先載入(含使用者新增的)自選股清單
-    all_syms = [c + ".TW" if m == "tse" else c + ".TWO"
-                for c, (_, m) in TW_STOCKS.items()] + list(YF_TICKERS)
+    syms = [c + (".TW" if m == "tse" else ".TWO") for c, (_, m) in TW_STOCKS.items()] \
+        + list(YF_TICKERS)
     print("載入歷史日線...")
-    data = yf.download(all_syms, period="6mo", auto_adjust=True,
-                       group_by="ticker", threads=True, progress=False)
-    today = pd.Timestamp.now().normalize()
-    for s in all_syms:
-        try:
-            df = data[s].dropna(subset=["Close"])
-            df = df[df.index.tz_localize(None).normalize() < today]  # 去掉今日未完成bar
-            HISTORY[s] = df["Close"]
-            VOLHIST[s] = float(df["Volume"].tail(20).mean())
-        except Exception as e:
-            print(f"  [警告] {s} 歷史資料失敗: {e}")
+    for s in syms:
+        h = _load_one_history(s)
+        if h:
+            HISTORY[s], VOLHIST[s] = h
+        else:
+            print(f"  [警告] {s} 歷史載入失敗")
+        time.sleep(0.3)        # 輕微間隔,避免被 Yahoo 限流
     print(f"  完成,共 {len(HISTORY)} 檔")
 
 
