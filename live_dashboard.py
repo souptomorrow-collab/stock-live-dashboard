@@ -36,7 +36,7 @@ YF_TICKERS = {
     "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum",
 }
 
-POLL_SEC = 10
+POLL_SEC = 5   # 台股輪詢間隔(秒)= MIS 源約 5 秒刷新一次,設更低無新資料且有封鎖風險
 app = FastAPI()
 STATE = {"quotes": {}, "updated": None}
 HISTORY: dict[str, pd.Series] = {}   # ticker -> 日線收盤序列(不含今日)
@@ -275,7 +275,7 @@ def updater():
             tw = fetch_tw_quotes()
         except Exception as e:
             print(f"[MIS錯誤] {e}"); tw = {}
-        if tick % 2 == 0:  # Yahoo 每 20 秒抓一次就好
+        if tick % 4 == 0:  # Yahoo 每 20 秒抓一次就好(4 × 5s),避免限流
             try:
                 yf_cache = fetch_yf_quotes()
             except Exception as e:
