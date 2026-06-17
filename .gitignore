@@ -5,3 +5,18 @@ report.html
 report_all.html
 .dataclone/
 logs/
+# 分析師影片監控的個人檔案(不進公開 repo)
+_transcript_*.txt
+_audio_*
+_vidlist.txt
+analyst_daily.md
+daily_monitor.py
+_batch.py
+_all.py
+_check*.py
+_verify*.py
+_debug*.py
+_test*.py
+_transcribe.py
+_vids.txt
+LINE訊息/

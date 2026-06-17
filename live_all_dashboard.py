@@ -29,6 +29,11 @@ TICKER_CACHE = os.path.join(DATA_DIR, "tickers.csv")
 MIS_BATCH = 50        # MIS API 每次查詢檔數
 MIS_DELAY = 1.5       # 每批間隔秒數(避免被證交所封鎖)
 MIN_TURNOVER = 5e6    # 流動性門檻(20日均成交金額,僅台股套用)
+# 強制納入全市場掃描的個股(不受流動性門檻;不在清單也會注入)。
+# code: (名稱, 市場, src, Yahoo代號) — src="yf" 走 Yahoo 輪掃(MIS 查不到的冷門上櫃/興櫃個股)
+FORCE_INCLUDE = {
+    "6428": ("淘米", "上櫃", "yf", "6428.TWO"),
+}
 HIST_CHUNK = 150
 YF_BATCH = 100        # Yahoo 批次查詢檔數(美股/加密貨幣即時輪掃)
 YF_DELAY = 1.0        # Yahoo 批次間隔秒數
@@ -148,7 +153,19 @@ def get_all_tickers() -> pd.DataFrame:
             parts.append(fn()[COLS])
         except Exception as e:
             print(f"  [警告] {fn.__name__} 失敗,略過該市場: {e}")
-    return pd.concat(parts, ignore_index=True)
+    df = pd.concat(parts, ignore_index=True)
+    # 注入強制納入但不在清單的台股(如新上櫃/低流動性個股)
+    have = set(df["code"])
+    extra = []
+    for code, (name, market, src, ysym) in FORCE_INCLUDE.items():
+        if code not in have:
+            mis = "otc" if market == "上櫃" else "tse"
+            extra.append({"code": code, "name": name, "market": market,
+                          "industry": "", "src": src, "mis": mis, "yf": ysym})
+    if extra:
+        df = pd.concat([df, pd.DataFrame(extra)[COLS]], ignore_index=True)
+        print(f"  [強制納入] 注入 {len(extra)} 檔: {', '.join(e['name'] for e in extra)}")
+    return df
 
 
 # ===== 歷史日線基底 =====
@@ -173,7 +190,7 @@ def load_history(tickers: pd.DataFrame):
                     continue
                 close = df["Close"]
                 row = tickers[tickers["yf"] == t].iloc[0]
-                if row["src"] == "mis":  # 僅台股套用成交金額流動性門檻
+                if row["src"] == "mis" and row["code"] not in FORCE_INCLUDE:  # 僅台股套用成交金額流動性門檻(強制納入者跳過)
                     turnover = float((close * df["Volume"]).tail(20).mean())
                     if turnover < MIN_TURNOVER:
                         continue
@@ -188,6 +205,36 @@ def load_history(tickers: pd.DataFrame):
             except Exception:
                 continue
         time.sleep(0.5)
+    # 強制納入個股:batch 下載偶爾會漏抓,改用單檔下載補回(較穩)
+    for code, (name, market, src, ysym) in FORCE_INCLUDE.items():
+        if code in HIST:
+            continue
+        sub = tickers[tickers["code"] == code]
+        if sub.empty:
+            continue
+        row = sub.iloc[0]
+        t = row["yf"]
+        try:
+            df = yf.download(t, period="6mo", auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df = df.dropna(subset=["Close"])
+            df = df[df.index.tz_localize(None).normalize() < today]
+            if len(df) < 70:
+                print(f"  [強制納入] {code} {name} 資料不足({len(df)}天),略過")
+                continue
+            close = df["Close"]
+            HIST[code] = {
+                "close": close.to_numpy(dtype=float),
+                "vol20": float(df["Volume"].tail(20).mean()),
+                "name": row["name"], "market": row["market"],
+                "industry": row["industry"], "src": row["src"],
+                "mis": row.get("mis", ""), "yf": t,
+            }
+            kept += 1
+            print(f"  [強制納入] {code} {name} 已補抓 {len(df)} 天歷史")
+        except Exception as e:
+            print(f"  [強制納入] {code} {name} 補抓失敗: {e}")
     print(f"  完成,納入分析 {kept} 檔(已排除流動性不足/資料不足)")
 
 
@@ -243,6 +290,17 @@ def live_score(close: np.ndarray, price: float, vol_ratio) -> dict:
 # ===== MIS 輪掃 =====
 SESSION = requests.Session()
 SESSION.headers["User-Agent"] = "Mozilla/5.0"
+
+
+def chart_quote(ysym):
+    """單檔用 Yahoo chart 端點取現價/昨收/量(冷門股 batch 日線常不準,改用即時 meta)。"""
+    j = SESSION.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}",
+                    timeout=10).json()
+    m = j["chart"]["result"][0]["meta"]
+    price = float(m["regularMarketPrice"])
+    prev = float(m.get("previousClose") or m.get("chartPreviousClose") or price)
+    vol = float(m.get("regularMarketVolume") or 0)
+    return price, prev, vol
 
 def sweep_loop():
     while True:
@@ -316,14 +374,17 @@ def yf_sweep_loop():
             for c in batch:
                 h = HIST[c]
                 try:
-                    df = data[h["yf"]].dropna(subset=["Close"])
-                    if len(df) < 1:
-                        continue
-                    price = float(df["Close"].iloc[-1])
-                    prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else price
+                    if c in FORCE_INCLUDE:   # 冷門股改用即時 meta(batch 日線會給過期收盤)
+                        price, prev, vol = chart_quote(h["yf"])
+                    else:
+                        df = data[h["yf"]].dropna(subset=["Close"])
+                        if len(df) < 1:
+                            continue
+                        price = float(df["Close"].iloc[-1])
+                        prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else price
+                        vol = float(df["Volume"].iloc[-1]) if "Volume" in df else 0.0
                     if price <= 0 or prev <= 0:
                         continue
-                    vol = float(df["Volume"].iloc[-1]) if "Volume" in df else 0.0
                 except Exception:
                     continue
                 vr = vol / h["vol20"] if h.get("vol20") else None
