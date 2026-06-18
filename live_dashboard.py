@@ -447,9 +447,19 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 <div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。<br>
 <b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。皆為技術面參考,不含基本面。<br>
 🔒 <b>持倉/損益</b>:點「＋設成本」輸入買進成本、股數、停損/停利價,即時算損益並在觸價時標記。此資料<b>只存在你目前這台瀏覽器</b>,不會上傳、不會發布、別人從分享網址也看不到。<br>
-🔔 <b>提醒</b>:按「開啟提醒」允許通知後,當訊號翻空、RSI≥80、或觸及你設的停損/停利時跳桌面通知並嗶一聲(需此頁開著)。</div>
+🔔 <b>提醒</b>:按「開啟提醒」允許通知後,當訊號翻空、RSI≥80、或觸及你設的停損/停利時跳桌面通知並嗶一聲(需此頁開著)。<br>
+🎯 <b>分析師點名</b>:名稱前有 🎯 = 鐘崑禎點過名的股(滑鼠移上去看是哪個黑馬/信心度)。此標記<b>只在你本機(localhost)顯示</b>,別人用分享網址看不到。</div>
 <script>
 const prev={};
+// ===== 分析師點名標記:只在本機(localhost)顯示,用分享網址/公開頁的人看不到 =====
+const LOCAL=['localhost','127.0.0.1','::1'].includes(location.hostname);
+let APICKS={};
+function aMark(code){
+  if(!LOCAL) return '';
+  const p=APICKS[code]; if(!p) return '';
+  const t=`🎯 鐘崑禎點名:${p.label}`+(p.conf?`(${p.conf})`:'')+(p.note?` — ${p.note}`:'');
+  return `<span title="${t}" style="cursor:help">🎯</span> `;
+}
 // ===== 持倉/損益:只存在本機瀏覽器(localStorage),不上傳、不發布、不經通道外流 =====
 function loadPos(){try{return JSON.parse(localStorage.getItem('positions')||'{}')}catch(e){return {}}}
 function savePos(o){localStorage.setItem('positions',JSON.stringify(o))}
@@ -526,7 +536,7 @@ async function refresh(){
         const cls=q.chg>=0?'up':'down';
         const dir=prev[k]===undefined?'':(q.price>prev[k]?'flash-up':(q.price<prev[k]?'flash-dn':''));
         prev[k]=q.price;
-        html+=`<tr><td>${q.name}</td><td style="color:#8a90a0">${k}</td>
+        html+=`<tr><td>${aMark(k)}${q.name}</td><td style="color:#8a90a0">${k}</td>
         <td class="num ${dir}"><b>${q.price.toLocaleString(undefined,{maximumFractionDigits:2})}</b></td>
         <td class="num ${cls}">${q.chg>=0?'▲':'▼'} ${q.chg.toFixed(2)}%</td>
         <td class=num>${q.high??'-'}</td><td class=num>${q.low??'-'}</td>
@@ -560,6 +570,7 @@ async function delTicker(code){
 }
 if('Notification' in window && Notification.permission==='granted'){alertsOn=true;
   const b=document.getElementById('alertbtn'); if(b)b.textContent='🔔 提醒已開啟';}
+if(LOCAL) fetch('/api/analyst').then(r=>r.json()).then(d=>{APICKS=d.picks||{};refresh();}).catch(()=>{});
 refresh(); setInterval(refresh,5000);
 </script></body></html>"""
 

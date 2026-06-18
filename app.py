@@ -9,6 +9,7 @@
 用法: python app.py  →  http://127.0.0.1:8000
 """
 import io
+import json
 import os
 import sys
 import threading
@@ -116,6 +117,18 @@ def deep_report():
     if os.path.exists(p):
         return FileResponse(p)
     return HTMLResponse("尚未產生,請先執行 python stock_analyzer.py")
+
+
+@app.get("/api/analyst")
+def api_analyst():
+    """分析師點名清單(本地檔 data/analyst_picks.json,僅供本機看板標記)。
+    刻意獨立於 /api/watch、/api/market,publish_worker 不會發布它 → 不外流。"""
+    path = os.path.join(OUT_DIR, "data", "analyst_picks.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return JSONResponse({"picks": json.load(f)})
+    except Exception:
+        return JSONResponse({"picks": {}})
 
 
 def boot():
