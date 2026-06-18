@@ -427,6 +427,9 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 .addbar button{background:#2a3550;border:1px solid #4f9cff;color:#e8eaf0;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
 .addbar button:hover{background:#34406a}
 .del{color:#ff5d6c;cursor:pointer;font-weight:700;padding:0 8px}.del:hover{color:#ff8b96}
+.setpos{color:#6f7891;cursor:pointer;font-size:12px;text-decoration:underline}.setpos:hover{color:#9aa2b8}
+.pls{color:#8a90a0;font-size:11px}
+.alarm{color:#ffce54;font-weight:700}
 </style></head><body>
 <h1>📡 即時股票分析</h1>
 <div class="sub"><span class="live"></span>台股 / 美股 / 加密每 5 秒自動更新 | 最後更新:<span id="ts">-</span> | 紅漲綠跌</div>
@@ -437,9 +440,38 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 </div>
 <div id="root">載入中...</div>
 <div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。<br>
-<b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。皆為技術面參考,不含基本面。</div>
+<b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。皆為技術面參考,不含基本面。<br>
+🔒 <b>持倉/損益</b>:點「＋設成本」輸入買進成本、股數、停損/停利價,即時算損益並在觸價時標記。此資料<b>只存在你目前這台瀏覽器</b>,不會上傳、不會發布、別人從分享網址也看不到。</div>
 <script>
 const prev={};
+// ===== 持倉/損益:只存在本機瀏覽器(localStorage),不上傳、不發布、不經通道外流 =====
+function loadPos(){try{return JSON.parse(localStorage.getItem('positions')||'{}')}catch(e){return {}}}
+function savePos(o){localStorage.setItem('positions',JSON.stringify(o))}
+function setPos(code){
+  const o=loadPos(); const p=o[code]||{};
+  const cost=parseFloat(prompt('買進成本價(每股):',p.cost??''));
+  if(!(cost>0)) return;                                   // 取消或無效
+  const shares=parseFloat(prompt('股數(台股1張=1000股;美股/幣填股數,可留空):',p.shares??''))||0;
+  const stop=parseFloat(prompt('停損價(可留空):',p.stop??''))||0;
+  const target=parseFloat(prompt('停利價(可留空):',p.target??''))||0;
+  o[code]={cost,shares,stop,target}; savePos(o); refresh();
+}
+function clearPos(code){const o=loadPos(); delete o[code]; savePos(o); refresh();}
+function renderPos(code,price){
+  const pos=loadPos()[code];
+  if(!pos||!(pos.cost>0)) return `<a class="setpos" onclick="setPos('${code}')">＋ 設成本</a>`;
+  const plpct=(price/pos.cost-1)*100, cls=plpct>=0?'up':'down';
+  let amt='';
+  if(pos.shares>0){const a=(price-pos.cost)*pos.shares; amt=` <span class="pls">${a>=0?'+':''}${Math.round(a).toLocaleString()}</span>`;}
+  let line='';
+  if(pos.stop>0){ line += price<=pos.stop ? ` <span class="alarm">⚠停損觸發</span>`
+                  : ` 損${pos.stop}(${((price/pos.stop-1)*100).toFixed(1)}%)`; }
+  if(pos.target>0){ line += price>=pos.target ? ` <span class="down">🎯停利觸發</span>`
+                    : ` 利${pos.target}(+${((pos.target/price-1)*100).toFixed(1)}%)`; }
+  return `<span class="${cls}"><b>${plpct>=0?'+':''}${plpct.toFixed(2)}%</b></span>${amt}`
+    + `<div class="pls">成本${pos.cost}${line} `
+    + `<a class="setpos" onclick="setPos('${code}')">⚙</a> <a class="setpos" onclick="clearPos('${code}')">✕</a></div>`;
+}
 async function refresh(){
   try{
     const r=await fetch('/api/quotes'); const s=await r.json();
@@ -449,7 +481,7 @@ async function refresh(){
     let html='';
     for(const g of ['台股','美股','加密貨幣']){
       if(!groups[g]) continue;
-      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>短線訊號</th><th class=num>評分</th><th>長線訊號</th><th>理由</th><th>報價時間</th><th></th></tr>`;
+      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>短線訊號</th><th class=num>評分</th><th>長線訊號</th><th>持倉/損益</th><th>理由</th><th>報價時間</th><th></th></tr>`;
       for(const [k,q] of groups[g]){
         const cls=q.chg>=0?'up':'down';
         const dir=prev[k]===undefined?'':(q.price>prev[k]?'flash-up':(q.price<prev[k]?'flash-dn':''));
@@ -461,6 +493,7 @@ async function refresh(){
         <td class=num>${q.rsi}</td><td><span class="badge ${q.css}">${q.signal}</span></td>
         <td class=num>${q.score>0?'+':''}${q.score}</td>
         <td><span class="badge ${q.lt_css||'hold'}" title="${q.lt_reasons||''}">${q.lt_signal||'-'}</span></td>
+        <td>${renderPos(k,q.price)}</td>
         <td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td>
         <td><span class="del" title="移除自選股" onclick="delTicker('${k}')">✕</span></td></tr>`;
       }
