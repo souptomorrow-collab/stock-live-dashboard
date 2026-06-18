@@ -418,7 +418,9 @@ h1{margin:0 0 4px} .sub{color:#8a90a0;margin-bottom:14px}
 @keyframes pulse{50%{opacity:.3}}
 .controls{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
 input,select{background:#1b1e27;border:1px solid #2a2e3a;color:#e8eaf0;border-radius:8px;padding:8px 12px;font-size:14px}
-input{width:240px}
+#q{width:240px} input[type=number]{width:88px}
+.preset{background:#1b1e27;border:1px solid #2a2e3a;color:#cfe3ff;border-radius:99px;padding:5px 13px;font-size:13px;cursor:pointer}
+.preset:hover{background:#23314e;border-color:#4f9cff}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .chip{background:#1b1e27;border:1px solid #2a2e3a;border-radius:99px;padding:4px 12px;font-size:13px;color:#aab}
 table{width:100%;border-collapse:collapse;background:#1b1e27;border-radius:12px;overflow:hidden}
@@ -436,10 +438,22 @@ th{background:#222633;color:#9aa2b8;cursor:pointer;user-select:none;position:sti
 <h1>📡 全市場即時分析</h1>
 <div class="sub"><span class="live"></span>背景輪掃全市場(每輪約 1-2 分鐘) | 最後更新:<span id="ts">-</span> | 上輪耗時:<span id="sw">-</span> | 紅漲綠跌</div>
 <div class="chips" id="chips"></div>
+<div class="chips" id="presets">
+  <span style="color:#8a90a0;font-size:13px;align-self:center">一鍵選股:</span>
+  <span class="preset" onclick="preset('breakout')">🚀 強勢突破</span>
+  <span class="preset" onclick="preset('volume')">📊 爆量上攻</span>
+  <span class="preset" onclick="preset('rebound')">⤴ 超賣反彈</span>
+  <span class="preset" onclick="preset('bull')">📈 均線多頭</span>
+  <span class="preset" onclick="preset('clear')">✕ 清除條件</span>
+</div>
 <div class="controls">
   <input id="q" placeholder="搜尋代碼 / 名稱 / 產業...">
   <select id="sig"><option value="">全部訊號</option><option>強力買進</option><option>買進</option><option>觀望</option><option>賣出</option><option>強力賣出</option></select>
   <select id="mkt"><option value="">全部市場</option><option>上市</option><option>上櫃</option><option>美股</option><option>加密貨幣</option></select>
+  <input id="rmin" type="number" placeholder="RSI≥">
+  <input id="rmax" type="number" placeholder="RSI≤">
+  <input id="smin" type="number" placeholder="評分≥">
+  <select id="cond"><option value="">全部條件</option><option value="金叉">MACD金叉</option><option value="放量漲">爆量上漲</option><option value="破布林上軌">破布林上軌</option><option value="破布林下軌">破布林下軌</option><option value="均線多頭">均線多頭排列</option><option value="站上月線">站上月線</option><option value="超賣">RSI超賣</option><option value="超買">RSI超買</option></select>
   <select id="srt">
     <option value="score_d">評分高→低</option><option value="score_a">評分低→高</option>
     <option value="chg_d">漲幅大→小</option><option value="chg_a">跌幅大→小</option>
@@ -450,7 +464,7 @@ th{background:#222633;color:#9aa2b8;cursor:pointer;user-select:none;position:sti
 <table id="tbl"><thead><tr><th>代碼</th><th>名稱</th><th>市場</th><th>產業</th>
 <th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th>理由</th><th>報價時間</th>
 </tr></thead><tbody></tbody></table>
-<div class="note">⚠️ 台股報價來自證交所 MIS、美股/加密貨幣來自 Yahoo;訊號由技術指標即時計算,僅供參考,不構成投資建議。台股已排除低流動性個股。預設只顯示前 300 筆,用搜尋/篩選縮小範圍。</div>
+<div class="note">⚠️ 台股報價來自證交所 MIS、美股/加密貨幣來自 Yahoo;訊號由技術指標即時計算,僅供參考,不構成投資建議。台股已排除低流動性個股。預設只顯示前 300 筆,用「一鍵選股」或 RSI 區間/最低評分/技術條件縮小範圍找買點。</div>
 <script>
 let DATA={};
 function render(){
@@ -458,9 +472,15 @@ function render(){
   const sig=document.getElementById('sig').value, mkt=document.getElementById('mkt').value;
   const [sk,sd]=document.getElementById('srt').value.split('_');
   let rows=Object.entries(DATA).map(([k,v])=>({code:k,...v}));
+  const rmin=parseFloat(document.getElementById('rmin').value), rmax=parseFloat(document.getElementById('rmax').value);
+  const smin=parseFloat(document.getElementById('smin').value), cond=document.getElementById('cond').value;
   if(q) rows=rows.filter(r=>(r.code+r.name+r.industry).toLowerCase().includes(q));
   if(sig) rows=rows.filter(r=>r.signal===sig);
   if(mkt) rows=rows.filter(r=>r.market===mkt);
+  if(!isNaN(rmin)) rows=rows.filter(r=>typeof r.rsi==='number'&&r.rsi>=rmin);
+  if(!isNaN(rmax)) rows=rows.filter(r=>typeof r.rsi==='number'&&r.rsi<=rmax);
+  if(!isNaN(smin)) rows=rows.filter(r=>r.score>=smin);
+  if(cond) rows=rows.filter(r=>(r.reasons||'').includes(cond));
   const key={score:'score',chg:'chg',rsi:'rsi'}[sk];
   rows.sort((a,b)=>(sd==='d'?b[key]-a[key]:a[key]-b[key]));
   document.getElementById('cnt').textContent=`符合 ${rows.length} 檔`;
@@ -487,7 +507,17 @@ async function refresh(){
     chips(); render();
   }catch(e){console.error(e);}
 }
-for(const id of ['q','sig','mkt','srt']) document.getElementById(id).addEventListener('input',render);
+for(const id of ['q','sig','mkt','srt','rmin','rmax','smin','cond']) document.getElementById(id).addEventListener('input',render);
+function setv(id,v){document.getElementById(id).value=v;}
+function preset(name){
+  ['q','sig','mkt','rmin','rmax','smin','cond'].forEach(id=>setv(id,''));
+  setv('srt','score_d');
+  if(name==='breakout'){ setv('sig','強力買進'); setv('cond','金叉'); }       // 強力買進 + MACD金叉
+  else if(name==='volume'){ setv('cond','放量漲'); setv('smin','3'); }          // 爆量上漲 + 評分≥3
+  else if(name==='rebound'){ setv('rmax','35'); setv('cond','站上月線'); setv('srt','rsi_a'); } // 低RSI + 站回月線
+  else if(name==='bull'){ setv('cond','均線多頭'); setv('smin','2'); }          // 均線多頭排列 + 評分≥2
+  render();
+}
 refresh(); setInterval(refresh,15000);
 </script></body></html>"""
 
