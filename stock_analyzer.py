@@ -15,27 +15,39 @@ import yfinance as yf
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
-# ===== 自選股清單(可自行增減) =====
-WATCHLIST = {
-    "台股": {
-        "2330.TW": "台積電",
-        "2317.TW": "鴻海",
-        "2454.TW": "聯發科",
-        "2308.TW": "台達電",
-        "0050.TW": "元大台灣50",
-    },
-    "美股": {
-        "AAPL": "Apple",
-        "NVDA": "NVIDIA",
-        "MSFT": "Microsoft",
-        "GOOGL": "Alphabet",
-        "TSLA": "Tesla",
-    },
-    "加密貨幣": {
-        "BTC-USD": "Bitcoin",
-        "ETH-USD": "Ethereum",
-    },
+# ===== 自選股清單:改讀即時看板的 data/watchlist.json,與面板同步 =====
+DEFAULT_WATCHLIST = {
+    "台股": {"2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科",
+             "2308.TW": "台達電", "0050.TW": "元大台灣50"},
+    "美股": {"AAPL": "Apple", "NVDA": "NVIDIA", "MSFT": "Microsoft",
+             "GOOGL": "Alphabet", "TSLA": "Tesla"},
+    "加密貨幣": {"BTC-USD": "Bitcoin", "ETH-USD": "Ethereum"},
 }
+
+
+def load_watchlist():
+    """讀 data/watchlist.json(即時看板同一份),轉成 {群組: {yf代號: 名稱}}。
+    讀不到或為空就退回內建預設清單。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "watchlist.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        return DEFAULT_WATCHLIST
+    tw, us, crypto = {}, {}, {}
+    for code, v in d.get("tw", {}).items():
+        name, mis = (v[0], v[1]) if isinstance(v, list) and len(v) >= 2 else (v, "tse")
+        tw[code + (".TW" if mis == "tse" else ".TWO")] = name or code
+    for sym, name in d.get("yf", {}).items():
+        (crypto if sym.endswith("-USD") else us)[sym] = name or sym
+    groups = {}
+    if tw: groups["台股"] = tw
+    if us: groups["美股"] = us
+    if crypto: groups["加密貨幣"] = crypto
+    return groups or DEFAULT_WATCHLIST
+
+
+WATCHLIST = load_watchlist()
 
 PERIOD = "1y"  # 抓一年日線
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))

@@ -90,6 +90,7 @@ def main():
     cmds = {     # name -> 重啟用指令
         "app": [PY, os.path.join(ROOT, "app.py")],
         "publish_worker": [PY, os.path.join(ROOT, "publish_worker.py")],
+        "report_worker": [PY, os.path.join(ROOT, "report_worker.py")],
     }
     dt = find_devtunnel()
     if dt:
@@ -104,6 +105,8 @@ def main():
         log("app.py 在時限內未就緒 ⚠️(仍繼續監看)")
     procs["publish_worker"] = spawn("publish_worker", cmds["publish_worker"])
     log("已啟動 publish_worker。")
+    procs["report_worker"] = spawn("report_worker", cmds["report_worker"])
+    log("已啟動 report_worker(定時重產深度報告)。")
     if "devtunnel" in cmds:
         procs["devtunnel"] = spawn("devtunnel", cmds["devtunnel"])
         log("已啟動 devtunnel host(公開分享通道)。")
