@@ -42,6 +42,7 @@ app = FastAPI()
 STATE = {"quotes": {}, "updated": None}
 HISTORY: dict[str, pd.Series] = {}   # ticker -> 日線收盤序列(不含今日)
 VOLHIST: dict[str, float] = {}       # ticker -> 20日均量
+LONGHIST: dict[str, pd.Series] = {}  # ticker -> 約2年日線收盤(算年線/長線訊號用)
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")  # 使用者自選股(可動態增減,程式內為預設種子)
@@ -103,6 +104,21 @@ def _load_one_history(yf_sym):
         return None
 
 
+def _load_long_history(yf_sym):
+    """抓約 2 年日線收盤,給長線(年線級別)訊號用。回傳 close Series 或 None。"""
+    try:
+        r = YF_SESSION.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}",
+                           params={"range": "2y", "interval": "1d"}, timeout=10)
+        res = r.json()["chart"]["result"][0]
+        q = res["indicators"]["quote"][0]
+        df = pd.DataFrame({"Close": q["close"]},
+                          index=pd.to_datetime(res["timestamp"], unit="s")).dropna(subset=["Close"])
+        df = df[df.index.normalize() < pd.Timestamp.now().normalize()]
+        return df["Close"].reset_index(drop=True) if len(df) else None
+    except Exception:
+        return None
+
+
 def add_ticker(raw):
     raw = (raw or "").strip().upper()
     if not raw:
@@ -115,6 +131,9 @@ def add_ticker(raw):
             if h:
                 name = _tw_name(raw) or raw
                 HISTORY[raw + suffix], VOLHIST[raw + suffix] = h
+                lh = _load_long_history(raw + suffix)
+                if lh is not None:
+                    LONGHIST[raw + suffix] = lh
                 TW_STOCKS[raw] = (name, mis)
                 save_watchlist()
                 return {"ok": True, "msg": f"已新增台股 {raw} {name}"}
@@ -126,6 +145,9 @@ def add_ticker(raw):
     if not h:
         return {"ok": False, "msg": f"找不到 {sym}(Yahoo 無資料)"}
     HISTORY[sym], VOLHIST[sym] = h
+    lh = _load_long_history(sym)
+    if lh is not None:
+        LONGHIST[sym] = lh
     YF_TICKERS[sym] = sym
     save_watchlist()
     return {"ok": True, "msg": f"已新增 {sym}"}
@@ -135,10 +157,11 @@ def remove_ticker(raw):
     raw = (raw or "").strip().upper()
     if raw in TW_STOCKS:
         m = TW_STOCKS.pop(raw)[1]
-        HISTORY.pop(raw + (".TW" if m == "tse" else ".TWO"), None)
+        sym = raw + (".TW" if m == "tse" else ".TWO")
+        HISTORY.pop(sym, None); LONGHIST.pop(sym, None)
     elif raw in YF_TICKERS:
         YF_TICKERS.pop(raw)
-        HISTORY.pop(raw, None)
+        HISTORY.pop(raw, None); LONGHIST.pop(raw, None)
     else:
         return {"ok": False, "msg": f"{raw} 不在自選股"}
     STATE["quotes"].pop(raw, None)
@@ -158,8 +181,11 @@ def load_history():
             HISTORY[s], VOLHIST[s] = h
         else:
             print(f"  [警告] {s} 歷史載入失敗")
+        lh = _load_long_history(s)        # 另抓 2 年日線給長線訊號
+        if lh is not None:
+            LONGHIST[s] = lh
         time.sleep(0.3)        # 輕微間隔,避免被 Yahoo 限流
-    print(f"  完成,共 {len(HISTORY)} 檔")
+    print(f"  完成,共 {len(HISTORY)} 檔(長線歷史 {len(LONGHIST)} 檔)")
 
 
 # ===== 即時指標 + 評分(歷史收盤 + 現價) =====
@@ -206,6 +232,49 @@ def live_score(hist: pd.Series, price: float, vol_ratio: float | None) -> dict:
     else: sig, css = "觀望", "hold"
     return {"rsi": round(rsi, 0), "score": score, "signal": sig,
             "css": css, "reasons": " / ".join(reasons)}
+
+
+def long_score(close, price) -> dict:
+    """長線訊號(年線級別):年線 MA240 多空 + 季線/半年線/年線排列 + 年線斜率 + 52週位階。
+    與短線訊號完全分開呈現,用約 2 年日線(LONGHIST)+ 現價計算。"""
+    n = 0 if close is None else len(close)
+    if n < 120:
+        return {"lt_signal": "資料不足", "lt_css": "hold", "lt_score": 0,
+                "lt_reasons": f"長期歷史不足(僅 {n} 日,年線需約 240 日)", "lt_pos": None}
+    c = pd.concat([close, pd.Series([price])], ignore_index=True)
+    ma60 = c.rolling(60).mean().iloc[-1]
+    ma120 = c.rolling(120).mean().iloc[-1]
+    has240 = len(c) >= 240
+    ma240 = c.rolling(240).mean().iloc[-1] if has240 else None
+    win = c.tail(240)
+    hi, lo = float(win.max()), float(win.min())
+    pos = (price - lo) / (hi - lo) * 100 if hi > lo else 50.0
+    slope_up = None
+    if has240 and len(c) >= 260:
+        slope_up = bool(ma240 > c.iloc[:-20].rolling(240).mean().iloc[-1])
+
+    sc, why = 0, []
+    if has240:
+        if price > ma240: sc += 2; why.append("站上年線")
+        else: sc -= 2; why.append("跌破年線")
+        if ma60 > ma120 > ma240: sc += 2; why.append("長期多頭排列")
+        elif ma60 < ma120 < ma240: sc -= 2; why.append("長期空頭排列")
+    else:
+        why.append("年線資料不足(以季線為主)")
+    if ma60 > ma120: sc += 1; why.append("季線>半年線")
+    else: sc -= 1; why.append("季線<半年線")
+    if slope_up is True: sc += 1; why.append("年線上彎")
+    elif slope_up is False: sc -= 1; why.append("年線下彎")
+    if pos >= 90: sc -= 1; why.append(f"逼近52週高(位階{pos:.0f}%)")
+    elif pos <= 15: sc += 1; why.append(f"逼近52週低(位階{pos:.0f}%)")
+    else: why.append(f"位階{pos:.0f}%")
+
+    sig, css = (("長線多頭", "strong-buy") if sc >= 4 else
+                ("偏多", "buy") if sc >= 2 else
+                ("長線空頭", "strong-sell") if sc <= -4 else
+                ("偏空", "sell") if sc <= -2 else ("中性", "hold"))
+    return {"lt_signal": sig, "lt_css": css, "lt_score": int(sc),
+            "lt_reasons": " / ".join(why), "lt_pos": round(pos)}
 
 
 # ===== 台股 MIS 即時報價 =====
@@ -294,16 +363,18 @@ def updater():        # 台股主迴圈:每 5 秒
                 continue
             vr = q["vol"] / VOLHIST[sym] if VOLHIST.get(sym) else None
             r = live_score(HISTORY[sym], q["price"], vr)
+            lt = long_score(LONGHIST.get(sym), q["price"])
             quotes[code] = {"name": name, "group": "台股", **q,
-                            "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r}
+                            "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r, **lt}
         for t, name in list(YF_TICKERS.items()):
             q = YF_CACHE.get(t)
             if not q or t not in HISTORY:
                 continue
             grp = "加密貨幣" if t.endswith("-USD") else "美股"
             r = live_score(HISTORY[t], q["price"], None)
+            lt = long_score(LONGHIST.get(t), q["price"])
             quotes[t] = {"name": name, "group": grp, **q,
-                         "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r}
+                         "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r, **lt}
 
         if quotes:
             STATE["quotes"] = quotes
@@ -365,7 +436,8 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
   <span id="addmsg" style="font-size:13px"></span>
 </div>
 <div id="root">載入中...</div>
-<div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。訊號由技術指標即時計算,僅供參考。</div>
+<div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。<br>
+<b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。皆為技術面參考,不含基本面。</div>
 <script>
 const prev={};
 async function refresh(){
@@ -377,7 +449,7 @@ async function refresh(){
     let html='';
     for(const g of ['台股','美股','加密貨幣']){
       if(!groups[g]) continue;
-      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>訊號</th><th class=num>評分</th><th>理由</th><th>報價時間</th><th></th></tr>`;
+      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>短線訊號</th><th class=num>評分</th><th>長線訊號</th><th>理由</th><th>報價時間</th><th></th></tr>`;
       for(const [k,q] of groups[g]){
         const cls=q.chg>=0?'up':'down';
         const dir=prev[k]===undefined?'':(q.price>prev[k]?'flash-up':(q.price<prev[k]?'flash-dn':''));
@@ -387,7 +459,9 @@ async function refresh(){
         <td class="num ${cls}">${q.chg>=0?'▲':'▼'} ${q.chg.toFixed(2)}%</td>
         <td class=num>${q.high??'-'}</td><td class=num>${q.low??'-'}</td>
         <td class=num>${q.rsi}</td><td><span class="badge ${q.css}">${q.signal}</span></td>
-        <td class=num>${q.score>0?'+':''}${q.score}</td><td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td>
+        <td class=num>${q.score>0?'+':''}${q.score}</td>
+        <td><span class="badge ${q.lt_css||'hold'}" title="${q.lt_reasons||''}">${q.lt_signal||'-'}</span></td>
+        <td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td>
         <td><span class="del" title="移除自選股" onclick="delTicker('${k}')">✕</span></td></tr>`;
       }
       html+='</table>';
