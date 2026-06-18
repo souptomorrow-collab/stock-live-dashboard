@@ -43,6 +43,7 @@ STATE = {"quotes": {}, "updated": None}
 HISTORY: dict[str, pd.Series] = {}   # ticker -> 日線收盤序列(不含今日)
 VOLHIST: dict[str, float] = {}       # ticker -> 20日均量
 LONGHIST: dict[str, pd.Series] = {}  # ticker -> 約2年日線收盤(算年線/長線訊號用)
+DIVHIST: dict[str, dict] = {}        # ticker -> {"dps": 近一年每股配息, "exdate": 最近除息日}
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")  # 使用者自選股(可動態增減,程式內為預設種子)
@@ -119,6 +120,24 @@ def _load_long_history(yf_sym):
         return None
 
 
+def _load_dividends(yf_sym):
+    """近一年每股配息合計 + 最近除息日(chart 端點 events,免認證)。回傳 dict 或 None。"""
+    try:
+        r = YF_SESSION.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}",
+                           params={"range": "2y", "interval": "1d", "events": "div"}, timeout=10)
+        res = r.json()["chart"]["result"][0]
+        evs = res.get("events", {}).get("dividends", {})
+        if not evs:
+            return {"dps": 0.0, "exdate": ""}
+        items = [(int(k), float(v.get("amount", 0))) for k, v in evs.items()]
+        cutoff = time.time() - 365 * 86400
+        ttm = sum(a for ts, a in items if ts >= cutoff)
+        exdate = datetime.fromtimestamp(max(ts for ts, _ in items)).strftime("%Y-%m-%d")
+        return {"dps": round(ttm, 2), "exdate": exdate}
+    except Exception:
+        return None
+
+
 def add_ticker(raw):
     raw = (raw or "").strip().upper()
     if not raw:
@@ -134,6 +153,9 @@ def add_ticker(raw):
                 lh = _load_long_history(raw + suffix)
                 if lh is not None:
                     LONGHIST[raw + suffix] = lh
+                dv = _load_dividends(raw + suffix)
+                if dv is not None:
+                    DIVHIST[raw + suffix] = dv
                 TW_STOCKS[raw] = (name, mis)
                 save_watchlist()
                 return {"ok": True, "msg": f"已新增台股 {raw} {name}"}
@@ -148,6 +170,9 @@ def add_ticker(raw):
     lh = _load_long_history(sym)
     if lh is not None:
         LONGHIST[sym] = lh
+    dv = _load_dividends(sym)
+    if dv is not None:
+        DIVHIST[sym] = dv
     YF_TICKERS[sym] = sym
     save_watchlist()
     return {"ok": True, "msg": f"已新增 {sym}"}
@@ -158,10 +183,10 @@ def remove_ticker(raw):
     if raw in TW_STOCKS:
         m = TW_STOCKS.pop(raw)[1]
         sym = raw + (".TW" if m == "tse" else ".TWO")
-        HISTORY.pop(sym, None); LONGHIST.pop(sym, None)
+        HISTORY.pop(sym, None); LONGHIST.pop(sym, None); DIVHIST.pop(sym, None)
     elif raw in YF_TICKERS:
         YF_TICKERS.pop(raw)
-        HISTORY.pop(raw, None); LONGHIST.pop(raw, None)
+        HISTORY.pop(raw, None); LONGHIST.pop(raw, None); DIVHIST.pop(raw, None)
     else:
         return {"ok": False, "msg": f"{raw} 不在自選股"}
     STATE["quotes"].pop(raw, None)
@@ -184,6 +209,9 @@ def load_history():
         lh = _load_long_history(s)        # 另抓 2 年日線給長線訊號
         if lh is not None:
             LONGHIST[s] = lh
+        dv = _load_dividends(s)           # 配息資料
+        if dv is not None:
+            DIVHIST[s] = dv
         time.sleep(0.3)        # 輕微間隔,避免被 Yahoo 限流
     print(f"  完成,共 {len(HISTORY)} 檔(長線歷史 {len(LONGHIST)} 檔)")
 
@@ -364,8 +392,10 @@ def updater():        # 台股主迴圈:每 5 秒
             vr = q["vol"] / VOLHIST[sym] if VOLHIST.get(sym) else None
             r = live_score(HISTORY[sym], q["price"], vr)
             lt = long_score(LONGHIST.get(sym), q["price"])
+            dv = DIVHIST.get(sym) or {}
             quotes[code] = {"name": name, "group": "台股", **q,
-                            "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r, **lt}
+                            "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r, **lt,
+                            "dps": dv.get("dps"), "exdate": dv.get("exdate")}
         for t, name in list(YF_TICKERS.items()):
             q = YF_CACHE.get(t)
             if not q or t not in HISTORY:
@@ -373,8 +403,10 @@ def updater():        # 台股主迴圈:每 5 秒
             grp = "加密貨幣" if t.endswith("-USD") else "美股"
             r = live_score(HISTORY[t], q["price"], None)
             lt = long_score(LONGHIST.get(t), q["price"])
+            dv = DIVHIST.get(t) or {}
             quotes[t] = {"name": name, "group": grp, **q,
-                         "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r, **lt}
+                         "chg": round((q["price"] / q["prev"] - 1) * 100, 2), **r, **lt,
+                         "dps": dv.get("dps"), "exdate": dv.get("exdate")}
 
         if quotes:
             STATE["quotes"] = quotes
@@ -445,7 +477,8 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
 </div>
 <div id="root">載入中...</div>
 <div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。<br>
-<b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。皆為技術面參考,不含基本面。<br>
+<b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。訊號為技術面參考。<br>
+💰 <b>殖利率/配息</b>:殖利率=近一年每股配息÷現價(隨報價即時更新),下方顯示年配息與最近除息日(資料來自 Yahoo,無配息標「無配息」)。<br>
 🔒 <b>持倉/損益</b>:點「＋設成本」輸入買進成本、股數、停損/停利價,即時算損益並在觸價時標記。此資料<b>只存在你目前這台瀏覽器</b>,不會上傳、不會發布、別人從分享網址也看不到。<br>
 🔔 <b>提醒</b>:按「開啟提醒」允許通知後,當訊號翻空、RSI≥80、或觸及你設的停損/停利時跳桌面通知並嗶一聲(需此頁開著)。<br>
 🎯 <b>分析師點名</b>:名稱前有 🎯 = 鐘崑禎點過名的股(滑鼠移上去看是哪個黑馬/信心度)。此標記<b>只在你本機(localhost)顯示</b>,別人用分享網址看不到。</div>
@@ -487,6 +520,14 @@ function renderPos(code,price){
   return `<span class="${cls}"><b>${plpct>=0?'+':''}${plpct.toFixed(2)}%</b></span>${amt}`
     + `<div class="pls">成本${pos.cost}${line} `
     + `<a class="setpos" onclick="setPos('${code}')">⚙</a> <a class="setpos" onclick="clearPos('${code}')">✕</a></div>`;
+}
+// ===== 殖利率/配息:殖利率 = 近一年每股配息 ÷ 現價(隨報價即時更新) =====
+function renderDiv(q){
+  if(q.dps==null) return '<span class="pls">-</span>';
+  if(!(q.dps>0)) return '<span class="pls">無配息</span>';
+  const y=q.price>0?(q.dps/q.price*100):0;
+  const ex=q.exdate?'除息'+q.exdate.slice(5):'';
+  return `<b>${y.toFixed(2)}%</b><div class="pls">配${q.dps} ${ex}</div>`;
 }
 // ===== 觸發警報:訊號翻空 / RSI過熱 / 觸及停損停利 → 桌面通知(全在瀏覽器,不外流) =====
 let alertsOn=false, primed=false;
@@ -531,7 +572,7 @@ async function refresh(){
     let html='';
     for(const g of ['台股','美股','加密貨幣']){
       if(!groups[g]) continue;
-      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>短線訊號</th><th class=num>評分</th><th>長線訊號</th><th>持倉/損益</th><th>理由</th><th>報價時間</th><th></th></tr>`;
+      html+=`<h2>${g}</h2><table><tr><th>名稱</th><th>代碼</th><th class=num>成交價</th><th class=num>漲跌幅</th><th class=num>最高</th><th class=num>最低</th><th class=num>RSI</th><th>短線訊號</th><th class=num>評分</th><th>長線訊號</th><th class=num>殖利率/配息</th><th>持倉/損益</th><th>理由</th><th>報價時間</th><th></th></tr>`;
       for(const [k,q] of groups[g]){
         const cls=q.chg>=0?'up':'down';
         const dir=prev[k]===undefined?'':(q.price>prev[k]?'flash-up':(q.price<prev[k]?'flash-dn':''));
@@ -543,6 +584,7 @@ async function refresh(){
         <td class=num>${q.rsi}</td><td><span class="badge ${q.css}">${q.signal}</span></td>
         <td class=num>${q.score>0?'+':''}${q.score}</td>
         <td><span class="badge ${q.lt_css||'hold'}" title="${q.lt_reasons||''}">${q.lt_signal||'-'}</span></td>
+        <td class=num>${renderDiv(q)}</td>
         <td>${renderPos(k,q.price)}</td>
         <td class=rsn>${q.reasons}</td><td style="color:#8a90a0">${q.time}</td>
         <td><span class="del" title="移除自選股" onclick="delTicker('${k}')">✕</span></td></tr>`;
