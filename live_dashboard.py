@@ -438,10 +438,16 @@ td.flash-up{animation:fu .8s} td.flash-dn{animation:fd .8s}
   <button onclick="addTicker()">＋ 新增自選股</button>
   <span id="addmsg" style="font-size:13px"></span>
 </div>
+<div class="addbar" style="margin-top:-10px">
+  <button id="alertbtn" onclick="enableAlerts()">🔔 開啟提醒</button>
+  <span class="note" style="margin:0">訊號翻空 / RSI≥80 過熱 / 觸及停損停利 時跳桌面通知</span>
+  <span id="alertlog" class="pls" style="flex:1"></span>
+</div>
 <div id="root">載入中...</div>
 <div class="note">⚠️ 台股報價來自證交所 MIS(盤中即時,收盤後顯示收盤價);美股/加密貨幣來自 Yahoo Finance。<br>
 <b>短線訊號</b>=MA5/20/60、RSI、MACD、布林(數天~一季);<b>長線訊號</b>=年線MA240多空、季線/半年線/年線排列、年線斜率、52週位階(數月~一年)。滑鼠移到長線標籤可看理由。皆為技術面參考,不含基本面。<br>
-🔒 <b>持倉/損益</b>:點「＋設成本」輸入買進成本、股數、停損/停利價,即時算損益並在觸價時標記。此資料<b>只存在你目前這台瀏覽器</b>,不會上傳、不會發布、別人從分享網址也看不到。</div>
+🔒 <b>持倉/損益</b>:點「＋設成本」輸入買進成本、股數、停損/停利價,即時算損益並在觸價時標記。此資料<b>只存在你目前這台瀏覽器</b>,不會上傳、不會發布、別人從分享網址也看不到。<br>
+🔔 <b>提醒</b>:按「開啟提醒」允許通知後,當訊號翻空、RSI≥80、或觸及你設的停損/停利時跳桌面通知並嗶一聲(需此頁開著)。</div>
 <script>
 const prev={};
 // ===== 持倉/損益:只存在本機瀏覽器(localStorage),不上傳、不發布、不經通道外流 =====
@@ -472,12 +478,46 @@ function renderPos(code,price){
     + `<div class="pls">成本${pos.cost}${line} `
     + `<a class="setpos" onclick="setPos('${code}')">⚙</a> <a class="setpos" onclick="clearPos('${code}')">✕</a></div>`;
 }
+// ===== 觸發警報:訊號翻空 / RSI過熱 / 觸及停損停利 → 桌面通知(全在瀏覽器,不外流) =====
+let alertsOn=false, primed=false;
+const lastSig={}, lastLt={}, firedSet={}, alertLog=[];
+function enableAlerts(){
+  if(!('Notification' in window)){alert('此瀏覽器不支援桌面通知');return;}
+  Notification.requestPermission().then(p=>{
+    alertsOn=(p==='granted');
+    document.getElementById('alertbtn').textContent=alertsOn?'🔔 提醒已開啟':'🔔 通知被拒(請到瀏覽器允許)';
+  });
+}
+function beep(){try{const a=new(window.AudioContext||window.webkitAudioContext)(),o=a.createOscillator(),g=a.createGain();
+  o.connect(g);g.connect(a.destination);o.frequency.value=880;g.gain.value=.05;o.start();o.stop(a.currentTime+.15);}catch(e){}}
+function notify(title,body){
+  alertLog.unshift(`${new Date().toLocaleTimeString()} ${title.replace(/[⚠🔥🎯]/g,'').trim()}:${body}`);
+  if(alertLog.length>30)alertLog.pop();
+  const el=document.getElementById('alertlog');if(el)el.textContent='🔔 '+alertLog.slice(0,4).join('  ｜  ');
+  if(alertsOn){try{new Notification(title,{body});beep();}catch(e){}}
+}
+function edge(key,cond,t,b){ if(cond){if(!firedSet[key]){firedSet[key]=1;if(primed)notify(t,b);}} else firedSet[key]=0; }
+function checkAlerts(list){
+  const sell=s=>s==='賣出'||s==='強力賣出';
+  for(const [k,q] of list){
+    const nm=q.name||k;
+    if(primed&&lastSig[k]!==undefined&&!sell(lastSig[k])&&sell(q.signal)) notify('⚠ 短線翻空',`${nm} 短線轉為「${q.signal}」`);
+    if(primed&&lastLt[k]!==undefined&&!sell(lastLt[k])&&sell(q.lt_signal)) notify('⚠ 長線翻空',`${nm} 長線轉為「${q.lt_signal}」(${q.lt_reasons||''})`);
+    lastSig[k]=q.signal; lastLt[k]=q.lt_signal;
+    edge(k+'|rsi', typeof q.rsi==='number'&&q.rsi>=80, '🔥 RSI過熱', `${nm} RSI=${q.rsi},短線過熱`);
+    const pos=loadPos()[k];
+    if(pos&&pos.stop>0) edge(k+'|stop', q.price<=pos.stop, '⚠ 停損觸發', `${nm} 現價${q.price} ≤ 停損${pos.stop}`);
+    if(pos&&pos.target>0) edge(k+'|tp', q.price>=pos.target, '🎯 停利觸發', `${nm} 現價${q.price} ≥ 停利${pos.target}`);
+  }
+  primed=true;
+}
 async function refresh(){
   try{
     const r=await fetch('/api/quotes'); const s=await r.json();
     document.getElementById('ts').textContent=s.updated||'-';
     const groups={};
     for(const [k,q] of Object.entries(s.quotes)) (groups[q.group]=groups[q.group]||[]).push([k,q]);
+    checkAlerts(Object.entries(s.quotes));
     let html='';
     for(const g of ['台股','美股','加密貨幣']){
       if(!groups[g]) continue;
@@ -518,6 +558,8 @@ async function delTicker(code){
   try{ await fetch('/api/quotes/remove?ticker='+encodeURIComponent(code),{method:'POST'}); refresh(); }
   catch(e){}
 }
+if('Notification' in window && Notification.permission==='granted'){alertsOn=true;
+  const b=document.getElementById('alertbtn'); if(b)b.textContent='🔔 提醒已開啟';}
 refresh(); setInterval(refresh,5000);
 </script></body></html>"""
 
