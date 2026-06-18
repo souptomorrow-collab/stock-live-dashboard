@@ -269,10 +269,10 @@ def long_score(close, price) -> dict:
     elif pos <= 15: sc += 1; why.append(f"逼近52週低(位階{pos:.0f}%)")
     else: why.append(f"位階{pos:.0f}%")
 
-    sig, css = (("長線多頭", "strong-buy") if sc >= 4 else
-                ("偏多", "buy") if sc >= 2 else
-                ("長線空頭", "strong-sell") if sc <= -4 else
-                ("偏空", "sell") if sc <= -2 else ("中性", "hold"))
+    sig, css = (("強力買進", "strong-buy") if sc >= 4 else
+                ("買進", "buy") if sc >= 2 else
+                ("強力賣出", "strong-sell") if sc <= -4 else
+                ("賣出", "sell") if sc <= -2 else ("觀望", "hold"))
     return {"lt_signal": sig, "lt_css": css, "lt_score": int(sc),
             "lt_reasons": " / ".join(why), "lt_pos": round(pos)}
 
