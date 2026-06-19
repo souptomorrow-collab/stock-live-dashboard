@@ -20,3 +20,6 @@ _test*.py
 _transcribe.py
 _vids.txt
 LINE訊息/
+_line_*
+_wpn*.db*
+capture_line.ps1
