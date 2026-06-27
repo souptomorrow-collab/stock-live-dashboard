@@ -131,21 +131,34 @@ def api_analyst():
         return JSONResponse({"picks": {}})
 
 
+def boot_bg():
+    """歷史載入全部丟到背景:伺服器可立即啟動,網頁秒開、資料漸進填入。
+    先載自選股(快、優先),再載全市場(慢),避免同時搶 Yahoo 頻寬互相限流。"""
+    try:
+        print("[背景1] 載入自選股歷史...", flush=True)
+        wl.load_history()
+        threading.Thread(target=wl.updater, daemon=True).start()       # 台股 5 秒
+        threading.Thread(target=wl.yf_updater, daemon=True).start()    # 美股+加密 5 秒
+        print("[背景1] 自選股就緒 ✅", flush=True)
+    except Exception as e:
+        print(f"[背景1] 自選股載入失敗: {e}", flush=True)
+    try:
+        print("[背景2] 取得全市場清單與歷史(約 3-5 分鐘)...", flush=True)
+        tickers = mk.get_all_tickers()
+        mk.load_history(tickers)
+        threading.Thread(target=mk.sweep_loop, daemon=True).start()       # 台股 MIS 輪掃
+        threading.Thread(target=mk.yf_sweep_loop, daemon=True).start()    # 美股+加密貨幣 Yahoo 輪掃
+        print("[背景2] 全市場就緒 ✅", flush=True)
+    except Exception as e:
+        print(f"[背景2] 全市場載入失敗: {e}", flush=True)
+
+
 def boot():
-    print("[1/3] 載入自選股歷史資料...")
-    wl.load_history()
-    threading.Thread(target=wl.updater, daemon=True).start()       # 台股 5 秒
-    threading.Thread(target=wl.yf_updater, daemon=True).start()    # 美股+加密 5 秒
-    print("[2/3] 取得全市場清單(台股+美股+加密貨幣)與歷史資料(約 3-5 分鐘)...")
-    tickers = mk.get_all_tickers()
-    mk.load_history(tickers)
-    threading.Thread(target=mk.sweep_loop, daemon=True).start()       # 台股 MIS 輪掃
-    threading.Thread(target=mk.yf_sweep_loop, daemon=True).start()    # 美股+加密貨幣 Yahoo 輪掃
-    print("[3/3] 啟動完成")
+    threading.Thread(target=boot_bg, daemon=True).start()   # 不擋伺服器啟動
 
 
 if __name__ == "__main__":
     import uvicorn
     boot()
-    print("整合儀表板: http://127.0.0.1:8000  (0.0.0.0 對外)")
+    print("整合儀表板: http://127.0.0.1:8000  (0.0.0.0 對外,網頁立即可連,資料背景載入)")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
