@@ -23,3 +23,6 @@ LINE訊息/
 _line_*
 _wpn*.db*
 capture_line.ps1
+_redo*
+transcripts/
+tools/
