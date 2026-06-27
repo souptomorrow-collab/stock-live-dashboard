@@ -45,7 +45,7 @@ VOLHIST: dict[str, float] = {}       # ticker -> 20日均量
 LONGHIST: dict[str, pd.Series] = {}  # ticker -> 約2年日線收盤(算年線/長線訊號用)
 DIVHIST: dict[str, dict] = {}        # ticker -> {"dps": 近一年每股配息, "exdate": 最近除息日}
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")  # 使用者自選股(可動態增減,程式內為預設種子)
 _TW_NAMES = None
 

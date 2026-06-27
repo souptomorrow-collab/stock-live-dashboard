@@ -28,7 +28,7 @@ DEFAULT_WATCHLIST = {
 def load_watchlist():
     """讀 data/watchlist.json(即時看板同一份),轉成 {群組: {yf代號: 名稱}}。
     讀不到或為空就退回內建預設清單。"""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "watchlist.json")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "watchlist.json")
     try:
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
@@ -50,7 +50,7 @@ def load_watchlist():
 WATCHLIST = load_watchlist()
 
 PERIOD = "1y"  # 抓一年日線
-OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(OUT_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 

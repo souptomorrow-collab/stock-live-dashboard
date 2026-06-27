@@ -20,7 +20,7 @@ try:
 except Exception:
     pass
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 START_DELAY = 360       # 開機後先等 6 分鐘,讓 app.py 的全市場歷史載入先跑完(避免搶 Yahoo 額度)
@@ -39,7 +39,7 @@ def fresh(name, max_age):
 def run(script):
     t0 = time.time()
     print(f"{datetime.now():%H:%M:%S} 產生 {script} ...", flush=True)
-    p = subprocess.run([PY, os.path.join(ROOT, script)], cwd=ROOT,
+    p = subprocess.run([PY, os.path.join(ROOT, "src", script)], cwd=ROOT,
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace", creationflags=NO_WINDOW)
     ok = p.returncode == 0

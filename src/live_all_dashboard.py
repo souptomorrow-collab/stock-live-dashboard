@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(OUT_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 TICKER_CACHE = os.path.join(DATA_DIR, "tickers.csv")

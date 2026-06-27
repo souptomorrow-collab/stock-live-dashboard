@@ -14,7 +14,7 @@ $LnkPath = Join-Path $Startup 'StockDashboard.lnk'
 $Wsh = New-Object -ComObject WScript.Shell
 $Lnk = $Wsh.CreateShortcut($LnkPath)
 $Lnk.TargetPath       = $Pythonw
-$Lnk.Arguments        = 'supervisor.py'
+$Lnk.Arguments        = 'src\supervisor.py'
 $Lnk.WorkingDirectory = $Root
 $Lnk.WindowStyle      = 7   # hidden (pythonw has no console anyway)
 $Lnk.Description       = 'Stock dashboard public live page - auto-start publish pipeline at logon'
@@ -23,5 +23,5 @@ $Lnk.Save()
 Write-Host "[OK] Logon auto-start shortcut created:" -ForegroundColor Green
 Write-Host "     $LnkPath"
 Write-Host "     Pipeline (app.py + publish_worker via supervisor) will start on next Windows logon."
-Write-Host "     Start now manually : pythonw `"$Root\supervisor.py`""
+Write-Host "     Start now manually : pythonw `"$Root\src\supervisor.py`""
 Write-Host "     Disable auto-start : Remove-Item `"$LnkPath`""

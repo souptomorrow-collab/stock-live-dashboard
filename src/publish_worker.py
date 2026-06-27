@@ -17,7 +17,7 @@ import requests
 
 sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)  # 被導向到 log 檔時仍即時逐行寫入
 
-REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLONE_DIR = os.path.join(REPO_DIR, ".dataclone")
 REMOTE = "https://github.com/souptomorrow-collab/stock-live-dashboard.git"
 API = "http://127.0.0.1:8000"

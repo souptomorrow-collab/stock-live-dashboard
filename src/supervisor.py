@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(ROOT, "logs")
 PY = sys.executable  # 用啟動本程式的同一個 Python
 API = "http://127.0.0.1:8000"
@@ -87,10 +87,10 @@ def wait_healthy():
 def main():
     log("=== Supervisor 啟動 ===")
     procs = {}   # name -> Popen
-    cmds = {     # name -> 重啟用指令
-        "app": [PY, os.path.join(ROOT, "app.py")],
-        "publish_worker": [PY, os.path.join(ROOT, "publish_worker.py")],
-        "report_worker": [PY, os.path.join(ROOT, "report_worker.py")],
+    cmds = {     # name -> 重啟用指令(腳本都在 src/)
+        "app": [PY, os.path.join(ROOT, "src", "app.py")],
+        "publish_worker": [PY, os.path.join(ROOT, "src", "publish_worker.py")],
+        "report_worker": [PY, os.path.join(ROOT, "src", "report_worker.py")],
     }
     dt = find_devtunnel()
     if dt:
